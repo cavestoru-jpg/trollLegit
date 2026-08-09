@@ -1,0 +1,1829 @@
+#include "world_render_hook.h"
+
+#include "../../enhance.h"
+#include "../../globals/globals.h"
+#include "../../utils/logger.h"
+#include "../../java/enhance_renderer_class.hpp"
+#include "../killaura/friends.h"
+
+#include <imgui.h>
+
+#include <sdk/classloader.h>
+#include <sdk/mappings/mappings.hpp>
+#include <sdk/render/render_view.h>
+#include <sdk/java/runtime_class.h>
+#include <sdk/java/jvmti_dump.h>
+#include <sdk/java/jvmti_env.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cctype>
+#include <cfloat>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+// Draws the ESP as real geometry into Minecraft's own frame, while the depth
+// buffer from the world pass is still bound, rather than as a flat overlay
+// after the frame is finished.
+//
+// Depth is the whole point: testing against it gives real occlusion by
+// terrain, and drawing before the HUD leaves the HUD on top instead of
+// underneath. It also runs once per frame rather than once per tick, so the
+// boxes interpolate with the entity models instead of stepping at 20 Hz.
+//
+// HOW IT ATTACHES: it subscribes to Fabric's WorldRenderEvents through a
+// java.lang.reflect.Proxy. No Minecraft class is hooked, redefined or touched.
+//
+// That is the fourth approach tried here, and the three dead ends are worth
+// recording because each looked correct until it ran:
+//
+//   - JNIHook on WorldRenderer.render blanked the world. NOT because
+//     redefining drops Mixin's work — JNIHook_ProbeClassMixins measured the
+//     opposite, the bytes handed to us for redefinition already contain
+//     Mixin's members (see tick_movement_hook.cpp, which dropped its own guard
+//     over exactly this). The method is the problem: Sodium and Iris rewrite
+//     the body of render, and JNIHook replaces the body it hooks with a native
+//     stub, so their injected code goes with it.
+//
+//   - A JVMTI breakpoint redefines nothing and would have been ideal, but
+//     can_generate_breakpoint_events is onload-solo in HotSpot:
+//     AddCapabilities returns JVMTI_ERROR_NOT_AVAILABLE (98) to anything that
+//     arrives after the VM is up, which a DLL injection always does. Debuggers
+//     get it because the VM starts with -agentlib:jdwp.
+//
+//   - JNIHook on InGameHud.render, picked as a method mods leave alone, broke
+//     the HUD: fabric-rendering-v1 wraps operations inside it
+//     (wrapOperation$..$wrapStatusEffectOverlay). On a Fabric install there is
+//     no reliable "clean" method in the render path — any mod may claim any of
+//     them — so the whole strategy of hooking one was abandoned.
+//
+// Subscribing to the event has none of those failure modes, and it is the
+// mechanism Iris and Sodium are themselves built to cooperate with. The cost
+// is a hard dependency on Fabric API being present, which is checked at
+// registration and reported rather than assumed.
+//
+// THREADING: the callback runs on Minecraft's render thread. A JNIEnv is
+// thread-local, so every JNI call below MUST go through the `env` handed to
+// the callback, never enhance::instance->get_env() (bound to the worker
+// thread). Method and field IDs are thread-safe once resolved, so they are
+// cached at init() and only used here.
+
+namespace
+{
+	constexpr const char* k_renderer_binary_name = "enhance/EnhanceRenderer";
+	constexpr int k_floats_per_vertex = 7;   // x, y, z, r, g, b, a
+
+	bool g_attached = false;
+	bool g_natives_registered = false;
+
+	// Note the `world` package: Fabric moved WorldRenderEvents there, and the
+	// first attempt at this looked exactly like a missing Fabric API until the
+	// JVM was asked what it actually had loaded.
+	constexpr const char* k_events_class =
+		"net/fabricmc/fabric/api/client/rendering/v1/world/WorldRenderEvents";
+
+	// Which event to subscribe to is NOT hardcoded — it is read off the class
+	// at runtime. The same version bump that moved the package also renamed the
+	// events (LAST and AFTER_TRANSLUCENT are gone, END_MAIN and
+	// BEFORE_TRANSLUCENT exist instead), and a hardcoded list would break again
+	// on the next one. The fields are enumerated over JVMTI and matched against
+	// the order below; anything unlisted is still tried, just last.
+	//
+	// Ordered by where in the frame the boxes want to land: as late in the
+	// world pass as possible, while the depth buffer is still bound.
+	constexpr const char* k_event_preference[] = {
+		"END_MAIN", "LAST", "END", "AFTER_TRANSLUCENT",
+		"BEFORE_TRANSLUCENT", "AFTER_ENTITIES", "DEBUG_RENDER",
+	};
+
+	// Fabric pairs each event field with a single-method interface whose name
+	// is the field in CamelCase: END_MAIN -> WorldRenderEvents$EndMain.
+	std::string field_to_interface_name(const std::string& field)
+	{
+		std::string out;
+		bool upper = true;
+
+		for (char c : field)
+		{
+			if (c == '_')
+			{
+				upper = true;
+				continue;
+			}
+
+			out += upper ? static_cast<char>(std::toupper(static_cast<unsigned char>(c)))
+			             : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			upper = false;
+		}
+
+		return out;
+	}
+
+	// Java renderer
+	jclass    g_renderer_class = nullptr;    // GlobalRef
+	jmethodID g_renderer_render = nullptr;
+
+	// Vertex staging. Native owns the memory; Java wraps it once with a direct
+	// ByteBuffer so nothing is copied or allocated per frame.
+	std::vector<float> g_tris;
+	std::vector<float> g_lines;
+	std::vector<float> g_packed;
+	jobject   g_packed_buffer = nullptr;     // GlobalRef to the direct ByteBuffer
+	size_t    g_packed_buffer_floats = 0;    // capacity the buffer was built for
+
+	// Minecraft accessors, all resolved once at init().
+	jclass    g_mc_class = nullptr;           // GlobalRef
+	jfieldID  g_fid_mc_instance = nullptr;
+	jfieldID  g_fid_mc_world = nullptr;
+	jfieldID  g_fid_mc_player = nullptr;
+	jfieldID  g_fid_mc_tick_counter = nullptr;   // optional
+
+	jclass    g_world_class = nullptr;        // GlobalRef
+	jfieldID  g_fid_world_players = nullptr;
+
+	jclass    g_list_class = nullptr;         // GlobalRef
+	jmethodID g_mid_list_size = nullptr;
+	jmethodID g_mid_list_get = nullptr;
+
+	jclass    g_entity_class = nullptr;       // GlobalRef
+	jmethodID g_mid_entity_get_x = nullptr;
+	jmethodID g_mid_entity_get_y = nullptr;
+	jmethodID g_mid_entity_get_z = nullptr;
+	jfieldID  g_fid_entity_box = nullptr;
+	jfieldID  g_fid_last_render_x = nullptr;  // optional
+	jfieldID  g_fid_last_render_y = nullptr;  // optional
+	jfieldID  g_fid_last_render_z = nullptr;  // optional
+
+	// Name tags. All optional: a missing id costs the tag, never the boxes.
+	jmethodID g_mid_scoreboard_name = nullptr;
+	jclass    g_living_class = nullptr;       // GlobalRef
+	jmethodID g_mid_get_health = nullptr;
+	jmethodID g_mid_get_max_health = nullptr;
+
+	jmethodID g_renderer_render_text = nullptr;
+	jmethodID g_renderer_upload_font = nullptr;
+	bool      g_font_uploaded = false;
+
+	// Text vertices: x, y, z, u, v, r, g, b, a
+	constexpr int k_floats_per_text_vertex = 9;
+	std::vector<float> g_text;
+	jobject   g_text_buffer = nullptr;        // GlobalRef to the direct ByteBuffer
+	size_t    g_text_buffer_floats = 0;
+
+	jclass    g_box_class = nullptr;          // GlobalRef
+	jfieldID  g_fid_box_min_x = nullptr;
+	jfieldID  g_fid_box_min_y = nullptr;
+	jfieldID  g_fid_box_min_z = nullptr;
+	jfieldID  g_fid_box_max_x = nullptr;
+	jfieldID  g_fid_box_max_y = nullptr;
+	jfieldID  g_fid_box_max_z = nullptr;
+
+	jmethodID g_mid_tick_progress = nullptr;  // optional
+
+	// No render-method mapping is needed any more — nothing is hooked. What
+	// remains required is what submit_frame reads to build the boxes.
+	bool mapping_present()
+	{
+		return sdk::mappings::minecraftclass_sig[0] != '\0'
+		    && sdk::mappings::entity_class_sig[0] != '\0';
+	}
+
+	void clear_exception(JNIEnv* env)
+	{
+		if (env->ExceptionCheck())
+			env->ExceptionClear();
+	}
+
+	// Same, but says what it swallowed.
+	//
+	// Every JNI call in this file used to end in a bare clear_exception, which
+	// is right for the probing ones — a missing field is expected — and wrong
+	// for the draw calls: a throw inside the Java renderer looked exactly like
+	// a frame that drew nothing. Reported once per distinct site, because this
+	// runs every frame.
+	void report_exception(JNIEnv* env, const char* where)
+	{
+		if (!env->ExceptionCheck())
+			return;
+
+		jthrowable thrown = env->ExceptionOccurred();
+		env->ExceptionClear();
+
+		std::string detail;
+		if (thrown)
+		{
+			if (jclass cls = env->GetObjectClass(thrown))
+			{
+				if (jmethodID to_string = env->GetMethodID(cls, "toString", "()Ljava/lang/String;"))
+				{
+					if (jstring s = static_cast<jstring>(env->CallObjectMethod(thrown, to_string)))
+					{
+						if (const char* utf = env->GetStringUTFChars(s, nullptr))
+						{
+							detail = utf;
+							env->ReleaseStringUTFChars(s, utf);
+						}
+						env->DeleteLocalRef(s);
+					}
+				}
+				env->DeleteLocalRef(cls);
+			}
+			env->DeleteLocalRef(thrown);
+		}
+
+		if (env->ExceptionCheck())
+			env->ExceptionClear();
+
+		static std::vector<std::string> reported;
+		const std::string key = std::string(where) + detail;
+		if (std::find(reported.begin(), reported.end(), key) != reported.end())
+			return;
+		reported.push_back(key);
+
+		logger::log_error(std::string("[world_render] ") + where + " threw: " +
+		                  (detail.empty() ? "(no detail)" : detail));
+	}
+
+	jclass global_class(JNIEnv* env, const char* sig)
+	{
+		jclass local = sdk::classloader::find_class(env, sig);
+		clear_exception(env);
+		if (!local)
+			return nullptr;
+
+		jclass global = static_cast<jclass>(env->NewGlobalRef(local));
+		env->DeleteLocalRef(local);
+		return global;
+	}
+
+	void push_vertex(std::vector<float>& out, const float p[3], const float c[4])
+	{
+		out.push_back(p[0]); out.push_back(p[1]); out.push_back(p[2]);
+		out.push_back(c[0]); out.push_back(c[1]); out.push_back(c[2]); out.push_back(c[3]);
+	}
+
+	void push_box(const double mn[3], const double mx[3], const float color[4],
+	              bool filled, double cam_x, double cam_y, double cam_z)
+	{
+		float c[8][3];
+		sdk::render::box_corners(mn, mx, c);
+
+		// Camera-relative: float loses far too much precision at Minecraft's
+		// world coordinates, and the shader only ever sees floats.
+		for (auto& corner : c)
+		{
+			corner[0] -= static_cast<float>(cam_x);
+			corner[1] -= static_cast<float>(cam_y);
+			corner[2] -= static_cast<float>(cam_z);
+		}
+
+		for (const auto& e : sdk::render::box_edges)
+		{
+			push_vertex(g_lines, c[e[0]], color);
+			push_vertex(g_lines, c[e[1]], color);
+		}
+
+		if (!filled)
+			return;
+
+		const float fill[4] = { color[0], color[1], color[2], color[3] * 0.22f };
+		static const int faces[6][4] = {
+			{ 0, 1, 2, 3 }, { 4, 5, 6, 7 },
+			{ 0, 1, 5, 4 }, { 1, 2, 6, 5 },
+			{ 2, 3, 7, 6 }, { 3, 0, 4, 7 },
+		};
+
+		for (const auto& q : faces)
+		{
+			push_vertex(g_tris, c[q[0]], fill);
+			push_vertex(g_tris, c[q[1]], fill);
+			push_vertex(g_tris, c[q[2]], fill);
+			push_vertex(g_tris, c[q[0]], fill);
+			push_vertex(g_tris, c[q[2]], fill);
+			push_vertex(g_tris, c[q[3]], fill);
+		}
+	}
+
+	// --- Name tags ----------------------------------------------------------
+	//
+	// The glyphs come from ImGui's atlas, which the client has already
+	// rasterised for the menu — so the in-world tags use the same font as the
+	// 2D ones instead of shipping a second copy of one. The atlas's white
+	// pixel doubles as the panel texture, which is what lets the backdrop and
+	// the text go out as a single draw.
+	//
+	// Everything is billboarded by hand from the camera basis: quads are built
+	// in pixel space exactly as the 2D path lays them out, then mapped onto the
+	// camera's right/up vectors. Scaling by metres-per-pixel at the tag's own
+	// distance keeps the on-screen size identical to the overlay version, so
+	// the only visible difference is that terrain now occludes them.
+
+	// Gap between the top of the bounding box and the bottom of the panel,
+	// in metres. Matches what the overlay leaves.
+	constexpr double k_tag_height_offset = 0.35;
+
+	std::string read_scoreboard_name(JNIEnv* env, jobject entity)
+	{
+		if (!g_mid_scoreboard_name)
+			return {};
+
+		jobject name_obj = env->CallObjectMethod(entity, g_mid_scoreboard_name);
+		clear_exception(env);
+		if (!name_obj)
+			return {};
+
+		std::string out;
+		if (const char* utf = env->GetStringUTFChars(static_cast<jstring>(name_obj), nullptr))
+		{
+			out = utf;
+			env->ReleaseStringUTFChars(static_cast<jstring>(name_obj), utf);
+		}
+		clear_exception(env);
+
+		env->DeleteLocalRef(name_obj);
+		return out;
+	}
+
+	// Leaves both at zero when the entity is not a LivingEntity or the mapping
+	// is missing; build_tag then simply omits the health field.
+	void read_health(JNIEnv* env, jobject entity, float& health, float& max_health)
+	{
+		health = 0.0f;
+		max_health = 0.0f;
+
+		if (!g_living_class || !g_mid_get_health || !g_mid_get_max_health)
+			return;
+		if (!env->IsInstanceOf(entity, g_living_class))
+			return;
+
+		health = env->CallFloatMethod(entity, g_mid_get_health);
+		clear_exception(env);
+		max_health = env->CallFloatMethod(entity, g_mid_get_max_health);
+		clear_exception(env);
+	}
+
+	ImFont* tag_font()
+	{
+		if (!ImGui::GetCurrentContext())
+			return nullptr;
+
+		ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+		if (!atlas || atlas->Fonts.empty())
+			return nullptr;
+
+		return atlas->Fonts[0];
+	}
+
+	void push_text_vertex(float x, float y, float z, float u, float v, const float c[4])
+	{
+		g_text.push_back(x); g_text.push_back(y); g_text.push_back(z);
+		g_text.push_back(u); g_text.push_back(v);
+		g_text.push_back(c[0]); g_text.push_back(c[1]); g_text.push_back(c[2]); g_text.push_back(c[3]);
+	}
+
+	// One screen-space rectangle, placed in the world on the camera plane.
+	// px/py are pixels relative to the tag's anchor, y growing downward as in
+	// every 2D layout; `up` is negated to match.
+	void push_billboard_quad(const float anchor[3], const float right[3], const float up[3],
+	                         float wpp,
+	                         float px0, float py0, float px1, float py1,
+	                         float u0, float v0, float u1, float v1,
+	                         const float color[4])
+	{
+		auto corner = [&](float px, float py, float out[3])
+		{
+			for (int i = 0; i < 3; ++i)
+				out[i] = anchor[i] + right[i] * (px * wpp) - up[i] * (py * wpp);
+		};
+
+		float a[3], b[3], c[3], d[3];
+		corner(px0, py0, a);   // top-left
+		corner(px1, py0, b);   // top-right
+		corner(px1, py1, c);   // bottom-right
+		corner(px0, py1, d);   // bottom-left
+
+		push_text_vertex(a[0], a[1], a[2], u0, v0, color);
+		push_text_vertex(b[0], b[1], b[2], u1, v0, color);
+		push_text_vertex(c[0], c[1], c[2], u1, v1, color);
+
+		push_text_vertex(a[0], a[1], a[2], u0, v0, color);
+		push_text_vertex(c[0], c[1], c[2], u1, v1, color);
+		push_text_vertex(d[0], d[1], d[2], u0, v1, color);
+	}
+
+	// Rounded backdrop, triangulated as a fan from the panel's centre.
+	//
+	// The overlay gets its corners from ImDrawList::AddRectFilled; there is no
+	// equivalent here, so the outline is walked by hand. It stays a single
+	// convex polygon, which is exactly what a fan needs.
+	void push_rounded_panel(const float anchor[3], const float right[3], const float up[3],
+	                        float wpp,
+	                        float x0, float y0, float x1, float y1, float radius,
+	                        float u, float v, const float color[4])
+	{
+		const float w = x1 - x0;
+		const float h = y1 - y0;
+		const float max_r = (w < h ? w : h) * 0.5f;
+		if (radius > max_r)
+			radius = max_r;
+
+		if (radius <= 0.5f)
+		{
+			push_billboard_quad(anchor, right, up, wpp, x0, y0, x1, y1, u, v, u, v, color);
+			return;
+		}
+
+		constexpr int k_corner_segments = 5;
+		constexpr float k_half_pi = 1.57079632679489661923f;
+
+		struct pt_t { float x, y; };
+		pt_t outline[4 * (k_corner_segments + 1)];
+		int n = 0;
+
+		// Screen-space convention, y growing downward, walked clockwise.
+		const pt_t centers[4] = {
+			{ x1 - radius, y0 + radius },
+			{ x1 - radius, y1 - radius },
+			{ x0 + radius, y1 - radius },
+			{ x0 + radius, y0 + radius },
+		};
+		const float start[4] = { -k_half_pi, 0.0f, k_half_pi, k_half_pi * 2.0f };
+
+		for (int c = 0; c < 4; ++c)
+		{
+			for (int s = 0; s <= k_corner_segments; ++s)
+			{
+				const float a = start[c] + k_half_pi * (static_cast<float>(s) / k_corner_segments);
+				outline[n].x = centers[c].x + std::cos(a) * radius;
+				outline[n].y = centers[c].y + std::sin(a) * radius;
+				++n;
+			}
+		}
+
+		auto to_world = [&](float px, float py, float out[3])
+		{
+			for (int i = 0; i < 3; ++i)
+				out[i] = anchor[i] + right[i] * (px * wpp) - up[i] * (py * wpp);
+		};
+
+		float centre[3];
+		to_world((x0 + x1) * 0.5f, (y0 + y1) * 0.5f, centre);
+
+		for (int i = 0; i < n; ++i)
+		{
+			const pt_t& a = outline[i];
+			const pt_t& b = outline[(i + 1) % n];
+
+			float aw[3], bw[3];
+			to_world(a.x, a.y, aw);
+			to_world(b.x, b.y, bw);
+
+			push_text_vertex(centre[0], centre[1], centre[2], u, v, color);
+			push_text_vertex(aw[0], aw[1], aw[2], u, v, color);
+			push_text_vertex(bw[0], bw[1], bw[2], u, v, color);
+		}
+	}
+
+	// Returns the advance actually consumed, so callers can lay out runs.
+	float push_string(ImFont* font, float px, const char* text,
+	                  const float anchor[3], const float right[3], const float up[3],
+	                  float wpp, float start_x, float top_y, const float color[4])
+	{
+		const float scale = px / font->FontSize;
+		float cursor = start_x;
+
+		for (const char* s = text; *s; ++s)
+		{
+			// ASCII only: names arrive stripped of format codes, and a
+			// multi-byte decoder here would be the only thing in this file
+			// that needs one.
+			const ImFontGlyph* glyph = font->FindGlyph(static_cast<ImWchar>(
+				static_cast<unsigned char>(*s)));
+			if (!glyph)
+				continue;
+
+			if (glyph->Visible)
+			{
+				push_billboard_quad(anchor, right, up, wpp,
+					cursor + glyph->X0 * scale, top_y + glyph->Y0 * scale,
+					cursor + glyph->X1 * scale, top_y + glyph->Y1 * scale,
+					glyph->U0, glyph->V0, glyph->U1, glyph->V1,
+					color);
+			}
+
+			cursor += glyph->AdvanceX * scale;
+		}
+
+		return cursor - start_x;
+	}
+
+	struct pending_tag_t
+	{
+		double x, y, z;          // anchor, world space
+		float  distance;
+		std::string name;
+		float  health, max_health;
+		bool   friendly;
+	};
+
+	std::vector<pending_tag_t> g_tags;
+
+	// Minimal, ASCII-only cousin of esp.cpp's strip_format_codes. The full one
+	// carries a UTF-8 decoder for names that arrive with multi-byte rank
+	// glyphs; nothing here can draw those anyway — the glyph lookup is ASCII —
+	// so unrepresentable bytes are dropped rather than decoded.
+	std::string strip_codes_ascii(const std::string& in)
+	{
+		std::string out;
+		out.reserve(in.size());
+
+		for (size_t i = 0; i < in.size(); ++i)
+		{
+			const unsigned char c = static_cast<unsigned char>(in[i]);
+
+			// The section sign is U+00A7, i.e. 0xC2 0xA7 in UTF-8.
+			if (c == 0xC2 && i + 2 < in.size() &&
+			    static_cast<unsigned char>(in[i + 1]) == 0xA7)
+			{
+				i += 2;
+				continue;
+			}
+
+			if (c == '&' && i + 1 < in.size() && std::isalnum(static_cast<unsigned char>(in[i + 1])))
+			{
+				++i;
+				continue;
+			}
+
+			if (c >= 0x20 && c < 0x7f)
+				out += static_cast<char>(c);
+		}
+
+		return out;
+	}
+
+	void format_health_text(char* out, size_t n, int mode, float health, float max_health)
+	{
+		switch (mode)
+		{
+			case 1:
+			{
+				const int hearts = static_cast<int>(std::lround(health / 2.0f));
+				const int max_hearts = static_cast<int>(std::lround((max_health > 1.0f ? max_health : 1.0f) / 2.0f));
+				snprintf(out, n, "%d/%d", hearts, max_hearts);
+				break;
+			}
+			case 2:
+			{
+				const float pct = max_health > 0.0f ? (health / max_health * 100.0f) : 0.0f;
+				snprintf(out, n, "%.0f%%", pct);
+				break;
+			}
+			default:
+				snprintf(out, n, "%.1f", health);
+				break;
+		}
+	}
+
+	// Same curve as esp.cpp's tag_scale, so switching a tag between the overlay
+	// and the world does not change its size.
+	float tag_scale(float distance)
+	{
+		float size = globals::nametags_size / 0.35f;
+		size = size < 0.2f ? 0.2f : (size > 4.0f ? 4.0f : size);
+
+		if (globals::nametags_static_size)
+			return size;
+
+		const float range = globals::nametags_range > 1.0f ? globals::nametags_range : 1.0f;
+		float t = distance / range;
+		t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+
+		const float scaled = size * (1.15f - t * 0.45f);
+		return scaled < 0.45f ? 0.45f : (scaled > 3.0f ? 3.0f : scaled);
+	}
+
+	void build_tag(const pending_tag_t& tag, ImFont* font, const sdk::render::view_t& v,
+	               double cam_x, double cam_y, double cam_z)
+	{
+		ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+		if (!atlas)
+			return;
+
+		const float raw_px = font->FontSize * tag_scale(tag.distance);
+		const float px = raw_px < 6.0f ? 6.0f : raw_px;
+
+		// Metres per screen pixel at this distance. Sizing by it is what makes
+		// a world-space quad come out the same size as the overlay's text:
+		// an object h metres tall covers h * fov_y * half_h / distance pixels.
+		const float denom = v.fov_y * v.half_h;
+		if (denom <= 0.0f)
+			return;
+		const float wpp = tag.distance / denom;
+
+		float alpha = globals::nametags_alpha;
+		alpha = alpha < 0.0f ? 0.0f : (alpha > 1.0f ? 1.0f : alpha);
+
+		char health_buf[32] = { 0 };
+		char dist_buf[24] = { 0 };
+		if (globals::nametags_show_health && tag.max_health > 0.0f)
+			format_health_text(health_buf, sizeof(health_buf), globals::nametags_health_mode,
+			                   tag.health, tag.max_health);
+		if (globals::nametags_show_distance)
+			snprintf(dist_buf, sizeof(dist_buf), "%.0fm", tag.distance);
+
+		const char* name_str = tag.name.empty() ? "Player" : tag.name.c_str();
+
+		const float gap = px * 0.35f;
+		const ImVec2 name_size = font->CalcTextSizeA(px, FLT_MAX, 0.0f, name_str);
+		const ImVec2 health_size = health_buf[0] ? font->CalcTextSizeA(px, FLT_MAX, 0.0f, health_buf) : ImVec2(0, 0);
+		const ImVec2 dist_size = dist_buf[0] ? font->CalcTextSizeA(px, FLT_MAX, 0.0f, dist_buf) : ImVec2(0, 0);
+
+		float total = name_size.x;
+		if (health_size.x > 0.0f) total += gap + health_size.x;
+		if (dist_size.x > 0.0f) total += gap + dist_size.x;
+
+		const float pad_x = px * 0.40f < 3.0f ? 3.0f : px * 0.40f;
+		const float pad_y = px * 0.22f < 2.0f ? 2.0f : px * 0.22f;
+		const float panel_h = px + pad_y * 2.0f;
+		const float panel_w = total + pad_x * 2.0f;
+
+		// Anchor is the bottom-centre of the panel, so the tag grows upward and
+		// its gap to the player's head does not change with scale.
+		const float panel_left = -panel_w * 0.5f;
+		const float panel_top = -panel_h;
+
+		const float anchor[3] = {
+			static_cast<float>(tag.x - cam_x),
+			static_cast<float>(tag.y - cam_y),
+			static_cast<float>(tag.z - cam_z),
+		};
+
+		const ImVec2 white = atlas->TexUvWhitePixel;
+		const float panel_color[4] = { 12.0f / 255.0f, 13.0f / 255.0f, 18.0f / 255.0f, alpha * 0.80f };
+
+		const float radius = px * 0.25f < 2.0f ? 2.0f : px * 0.25f;
+		push_rounded_panel(anchor, v.right, v.up, wpp,
+			panel_left, panel_top, panel_left + panel_w, 0.0f, radius,
+			white.x, white.y,
+			panel_color);
+
+		float cursor = panel_left + pad_x;
+		const float top = panel_top + pad_y;
+
+		float name_color[4] = { 1.0f, 1.0f, 1.0f, alpha };
+		if (tag.friendly)
+		{
+			const ImVec4& fc = globals::nametags_friend_color;
+			const float fa = fc.w * alpha;
+			name_color[0] = fc.x;
+			name_color[1] = fc.y;
+			name_color[2] = fc.z;
+			name_color[3] = fa < 0.0f ? 0.0f : (fa > 1.0f ? 1.0f : fa);
+		}
+
+		cursor += push_string(font, px, name_str, anchor, v.right, v.up, wpp, cursor, top, name_color);
+
+		if (health_buf[0])
+		{
+			cursor += gap;
+			const float ratio = tag.max_health > 0.0f ? (tag.health / tag.max_health) : 1.0f;
+			const float health_color[4] = {
+				ratio > 0.5f ? (1.0f - ratio) * 2.0f : 1.0f,
+				ratio > 0.5f ? 1.0f : ratio * 2.0f,
+				0.25f,
+				alpha,
+			};
+			cursor += push_string(font, px, health_buf, anchor, v.right, v.up, wpp, cursor, top, health_color);
+		}
+
+		if (dist_buf[0])
+		{
+			cursor += gap;
+			const float dist_color[4] = { 0.70f, 0.72f, 0.78f, alpha };
+			push_string(font, px, dist_buf, anchor, v.right, v.up, wpp, cursor, top, dist_color);
+		}
+	}
+
+	// 0..1 fraction between the last tick and this frame. Falls back to 1.0
+	// (the current tick position) when the mapping is missing, which is exactly
+	// the old, uninterpolated behaviour.
+	float tick_progress(JNIEnv* env, jobject mc)
+	{
+		if (!g_fid_mc_tick_counter || !g_mid_tick_progress || !mc)
+			return 1.0f;
+
+		jobject counter = env->GetObjectField(mc, g_fid_mc_tick_counter);
+		clear_exception(env);
+		if (!counter)
+			return 1.0f;
+
+		const jfloat p = env->CallFloatMethod(counter, g_mid_tick_progress, JNI_TRUE);
+		clear_exception(env);
+		env->DeleteLocalRef(counter);
+
+		if (p < 0.0f || p > 1.0f)
+			return 1.0f;
+
+		return p;
+	}
+
+	// RenderTickCounter.getTickProgress, by name first and by shape second.
+	//
+	// The name is the primary route because verify_mappings.py checks it
+	// against Yarn at build time. The scan is what the header used to promise
+	// and never had: if a version bump renumbers the method, one (Z)F method on
+	// this class is unambiguous enough to keep interpolation alive until the
+	// header catches up. Returning null only costs smoothness, so every failure
+	// here is quiet.
+	jmethodID resolve_tick_progress(JNIEnv* env, jclass counter_cls)
+	{
+		if (sdk::mappings::render_tick_counter_progress_name[0])
+		{
+			jmethodID mid = env->GetMethodID(counter_cls,
+				sdk::mappings::render_tick_counter_progress_name,
+				sdk::mappings::render_tick_counter_progress_sig);
+			clear_exception(env);
+			if (mid)
+				return mid;
+
+			logger::log("[world_render] " +
+			            std::string(sdk::mappings::render_tick_counter_progress_name) +
+			            " did not resolve — falling back to a signature scan.");
+		}
+
+		jvmtiEnv* jvmti = sdk::java::jvmti();
+		if (!jvmti)
+			return nullptr;
+
+		jint count = 0;
+		jmethodID* methods = nullptr;
+		if (jvmti->GetClassMethods(counter_cls, &count, &methods) != JVMTI_ERROR_NONE)
+			return nullptr;
+
+		jmethodID found = nullptr;
+		int matches = 0;
+
+		for (jint i = 0; i < count; ++i)
+		{
+			char* m_sig = nullptr;
+			if (jvmti->GetMethodName(methods[i], nullptr, &m_sig, nullptr) != JVMTI_ERROR_NONE)
+				continue;
+
+			if (m_sig && std::strcmp(m_sig, sdk::mappings::render_tick_counter_progress_sig) == 0)
+			{
+				++matches;
+				if (!found)
+					found = methods[i];
+			}
+
+			if (m_sig) jvmti->Deallocate(reinterpret_cast<unsigned char*>(m_sig));
+		}
+
+		jvmti->Deallocate(reinterpret_cast<unsigned char*>(methods));
+
+		// More than one candidate means the shape stopped identifying the
+		// method. Guessing would be worse than no interpolation: a wrong 0..1
+		// value moves every box by a fraction of its velocity every frame.
+		if (matches != 1)
+			return nullptr;
+
+		return found;
+	}
+
+	// Hands ImGui's glyph atlas to the Java side once. Deferred to the first
+	// frame that actually wants text: the atlas is only guaranteed built after
+	// the overlay has run, and init() happens before that.
+	bool ensure_font_uploaded(JNIEnv* env)
+	{
+		if (g_font_uploaded)
+			return true;
+		if (!g_renderer_upload_font || !ImGui::GetCurrentContext())
+			return false;
+
+		ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+		if (!atlas)
+			return false;
+
+		unsigned char* pixels = nullptr;
+		int width = 0, height = 0;
+		atlas->GetTexDataAsRGBA32(&pixels, &width, &height);
+		if (!pixels || width <= 0 || height <= 0)
+			return false;
+
+		jobject buffer = env->NewDirectByteBuffer(pixels,
+			static_cast<jlong>(static_cast<size_t>(width) * height * 4));
+		clear_exception(env);
+		if (!buffer)
+			return false;
+
+		const jint status = env->CallStaticIntMethod(g_renderer_class, g_renderer_upload_font,
+			buffer, static_cast<jint>(width), static_cast<jint>(height));
+		report_exception(env, "EnhanceRenderer.uploadFont");
+		env->DeleteLocalRef(buffer);
+
+		if (status == 0)
+		{
+			g_font_uploaded = true;
+			logger::log("[world_render] glyph atlas uploaded (" + std::to_string(width) + "x" +
+			            std::to_string(height) + ") — in-world name tags active.");
+			return true;
+		}
+
+		// Reported once: retried every frame otherwise, and a failing upload
+		// fails the same way each time.
+		static bool reported = false;
+		if (!reported)
+		{
+			reported = true;
+
+			std::string why;
+			switch (status)
+			{
+				case -1: why = "the texture could not be created"; break;
+				case -2: why = "the upload reported success but the texture reads back empty — "
+				               "something redirected the pixel source"; break;
+				default: why = "GL error 0x" + std::to_string(status); break;
+			}
+
+			logger::log_error("[world_render] glyph atlas upload failed: " + why +
+			                  ". Name tags stay off; boxes are unaffected.");
+		}
+
+		return false;
+	}
+
+	void submit_text(JNIEnv* env, const float mvp[16])
+	{
+		if (g_text.empty() || !g_renderer_render_text)
+			return;
+		if (!ensure_font_uploaded(env))
+			return;
+
+		if (!g_text_buffer || g_text_buffer_floats != g_text.capacity())
+		{
+			if (g_text_buffer)
+			{
+				env->DeleteGlobalRef(g_text_buffer);
+				g_text_buffer = nullptr;
+			}
+
+			jobject local = env->NewDirectByteBuffer(g_text.data(),
+				static_cast<jlong>(g_text.capacity() * sizeof(float)));
+			clear_exception(env);
+			if (!local)
+				return;
+
+			g_text_buffer = env->NewGlobalRef(local);
+			env->DeleteLocalRef(local);
+			g_text_buffer_floats = g_text.capacity();
+
+			if (!g_text_buffer)
+				return;
+		}
+
+		jfloatArray mvp_array = env->NewFloatArray(16);
+		clear_exception(env);
+		if (!mvp_array)
+			return;
+		env->SetFloatArrayRegion(mvp_array, 0, 16, mvp);
+		clear_exception(env);
+
+		env->CallStaticVoidMethod(g_renderer_class, g_renderer_render_text,
+			g_text_buffer,
+			static_cast<jint>(g_text.size() / k_floats_per_text_vertex),
+			mvp_array,
+			globals::esp_world_through_walls ? JNI_FALSE : JNI_TRUE);
+		report_exception(env, "EnhanceRenderer.renderText");
+
+		env->DeleteLocalRef(mvp_array);
+	}
+
+	void submit_boxes(JNIEnv* env, const float mvp[16]);
+
+	// Collects the boxes and tags for this frame and hands them to the Java
+	// renderer.
+	void submit_frame(JNIEnv* env)
+	{
+		if (!globals::esp_world_render_enabled)
+			return;
+		if (!g_renderer_class || !g_renderer_render)
+			return;
+		if (!g_mc_class || !g_fid_mc_instance)
+			return;
+
+		double cam_x = 0.0, cam_y = 0.0, cam_z = 0.0;
+		float cam_yaw = 0.0f, cam_pitch = 0.0f, cam_fov = 70.0f;
+		if (!sdk::render::sample_camera(cam_x, cam_y, cam_z, cam_yaw, cam_pitch, cam_fov))
+			return;
+
+		// Aspect only affects the horizontal term; the framebuffer size is not
+		// available here, so reuse whatever the overlay published this frame.
+		const sdk::render::view_t& current = sdk::render::view();
+		const int w = current.valid ? static_cast<int>(current.half_w * 2.0f) : 0;
+		const int h = current.valid ? static_cast<int>(current.half_h * 2.0f) : 0;
+		if (w <= 0 || h <= 0)
+			return;
+
+		sdk::render::set_view(cam_x, cam_y, cam_z, cam_yaw, cam_pitch, cam_fov, w, h);
+
+		float mvp[16];
+		if (!sdk::render::build_view_projection(mvp))
+			return;
+
+		g_tris.clear();
+		g_lines.clear();
+		g_text.clear();
+		g_tags.clear();
+
+		ImFont* font = nullptr;
+		const bool want_tags = globals::nametags_enabled && globals::nametags_in_world;
+		if (want_tags)
+		{
+			font = tag_font();
+			if (font && !font->IsLoaded())
+				font = nullptr;
+		}
+
+		jobject mc = env->GetStaticObjectField(g_mc_class, g_fid_mc_instance);
+		clear_exception(env);
+		if (!mc)
+			return;
+
+		const float delta = tick_progress(env, mc);
+
+		jobject world = env->GetObjectField(mc, g_fid_mc_world);
+		clear_exception(env);
+		jobject local_player = env->GetObjectField(mc, g_fid_mc_player);
+		clear_exception(env);
+
+		if (world && g_fid_world_players)
+		{
+			jobject players = env->GetObjectField(world, g_fid_world_players);
+			clear_exception(env);
+
+			if (players)
+			{
+				const jint count = env->CallIntMethod(players, g_mid_list_size);
+				clear_exception(env);
+
+				const float color[4] = {
+					globals::esp_color.x, globals::esp_color.y,
+					globals::esp_color.z, globals::esp_color.w
+				};
+
+				for (jint i = 0; i < count; ++i)
+				{
+					jobject entity = env->CallObjectMethod(players, g_mid_list_get, i);
+					clear_exception(env);
+					if (!entity)
+						continue;
+
+					if (local_player && env->IsSameObject(entity, local_player))
+					{
+						env->DeleteLocalRef(entity);
+						continue;
+					}
+
+					jobject box = env->GetObjectField(entity, g_fid_entity_box);
+					clear_exception(env);
+					if (!box)
+					{
+						env->DeleteLocalRef(entity);
+						continue;
+					}
+
+					double mn[3] = {
+						env->GetDoubleField(box, g_fid_box_min_x),
+						env->GetDoubleField(box, g_fid_box_min_y),
+						env->GetDoubleField(box, g_fid_box_min_z),
+					};
+					double mx[3] = {
+						env->GetDoubleField(box, g_fid_box_max_x),
+						env->GetDoubleField(box, g_fid_box_max_y),
+						env->GetDoubleField(box, g_fid_box_max_z),
+					};
+
+					// The bounding box sits at the tick position. Shift it by the
+					// same amount the game shifts the model, so the box tracks the
+					// entity between ticks instead of stepping at 20 Hz.
+					if (g_fid_last_render_x && g_fid_last_render_y && g_fid_last_render_z)
+					{
+						const double now_x = env->CallDoubleMethod(entity, g_mid_entity_get_x);
+						const double now_y = env->CallDoubleMethod(entity, g_mid_entity_get_y);
+						const double now_z = env->CallDoubleMethod(entity, g_mid_entity_get_z);
+						clear_exception(env);
+
+						const double prev_x = env->GetDoubleField(entity, g_fid_last_render_x);
+						const double prev_y = env->GetDoubleField(entity, g_fid_last_render_y);
+						const double prev_z = env->GetDoubleField(entity, g_fid_last_render_z);
+
+						const double off_x = (prev_x + (now_x - prev_x) * delta) - now_x;
+						const double off_y = (prev_y + (now_y - prev_y) * delta) - now_y;
+						const double off_z = (prev_z + (now_z - prev_z) * delta) - now_z;
+
+						mn[0] += off_x; mx[0] += off_x;
+						mn[1] += off_y; mx[1] += off_y;
+						mn[2] += off_z; mx[2] += off_z;
+					}
+
+					push_box(mn, mx, color, globals::esp_world_filled, cam_x, cam_y, cam_z);
+
+					// Tags are queued rather than built here: they blend against
+					// each other, so they have to go out far-to-near, which is
+					// not the order the player list arrives in.
+					if (font)
+					{
+						const double ax = (mn[0] + mx[0]) * 0.5;
+						const double ay = mx[1] + k_tag_height_offset;
+						const double az = (mn[2] + mx[2]) * 0.5;
+
+						const double ddx = ax - cam_x;
+						const double ddy = ay - cam_y;
+						const double ddz = az - cam_z;
+						const float distance = static_cast<float>(std::sqrt(ddx * ddx + ddy * ddy + ddz * ddz));
+
+						if (distance <= globals::nametags_range)
+						{
+							pending_tag_t tag{};
+							tag.x = ax;
+							tag.y = ay;
+							tag.z = az;
+							tag.distance = distance;
+							tag.name = strip_codes_ascii(read_scoreboard_name(env, entity));
+							tag.friendly = !tag.name.empty() &&
+								enhance::modules::killaura::friends_list::contains(tag.name);
+
+							read_health(env, entity, tag.health, tag.max_health);
+
+							if (!tag.friendly || globals::nametags_show_friends)
+								g_tags.push_back(std::move(tag));
+						}
+					}
+
+					env->DeleteLocalRef(box);
+					env->DeleteLocalRef(entity);
+				}
+
+				env->DeleteLocalRef(players);
+			}
+		}
+
+		if (world) env->DeleteLocalRef(world);
+		if (local_player) env->DeleteLocalRef(local_player);
+		env->DeleteLocalRef(mc);
+
+		// Far to near, so a nearer tag blends over a more distant one rather
+		// than being cut out by it.
+		//
+		// Guarded on its own: this runs before the boxes are submitted, so
+		// letting it throw up to native_frame would drop the whole frame and
+		// take the boxes with it — which is not obviously a tag problem when
+		// you are looking at an empty screen.
+		if (font && !g_tags.empty())
+		{
+			try
+			{
+				std::sort(g_tags.begin(), g_tags.end(),
+					[](const pending_tag_t& a, const pending_tag_t& b)
+					{
+						return a.distance > b.distance;
+					});
+
+				const sdk::render::view_t& view = sdk::render::view();
+				for (const auto& tag : g_tags)
+					build_tag(tag, font, view, cam_x, cam_y, cam_z);
+			}
+			catch (...)
+			{
+				g_text.clear();
+
+				static bool reported = false;
+				if (!reported)
+				{
+					reported = true;
+					logger::log_error("[world_render] building the name tags threw — tags are "
+					                  "skipped this frame, boxes are unaffected.");
+				}
+			}
+		}
+
+		// Boxes first, tags after — both are translucent, and a tag drawn
+		// before the box it belongs to gets painted over by it. This is also
+		// why the text submit is not an early return: a frame with tags but no
+		// boxes still has to reach it.
+		if (!g_tris.empty() || !g_lines.empty())
+			submit_boxes(env, mvp);
+
+		submit_text(env, mvp);
+
+		// One line, on the first frame that draws anything. The per-frame
+		// version of this was invaluable while the tags were coming out black,
+		// but the log is shared with modules that write every tick and does
+		// not need a heartbeat from this one as well.
+		{
+			static bool announced = false;
+			if (!announced && (!g_tris.empty() || !g_text.empty()))
+			{
+				announced = true;
+				logger::log("[world_render] drawing: boxes=" +
+				            std::to_string(g_tris.size() / k_floats_per_vertex) + "tri/" +
+				            std::to_string(g_lines.size() / k_floats_per_vertex) + "line, tags=" +
+				            std::to_string(g_tags.size()));
+			}
+		}
+	}
+
+	// Splits out of submit_frame so the tag path can run after it without
+	// duplicating the buffer bookkeeping.
+	void submit_boxes(JNIEnv* env, const float mvp[16])
+	{
+
+		// Triangles first, then lines: the Java side draws them as two ranges of
+		// one buffer.
+		g_packed.clear();
+		g_packed.insert(g_packed.end(), g_tris.begin(), g_tris.end());
+		g_packed.insert(g_packed.end(), g_lines.begin(), g_lines.end());
+
+		// The direct buffer wraps our storage, so it has to be rebuilt whenever
+		// the vector reallocates.
+		if (!g_packed_buffer || g_packed_buffer_floats != g_packed.capacity())
+		{
+			if (g_packed_buffer)
+			{
+				env->DeleteGlobalRef(g_packed_buffer);
+				g_packed_buffer = nullptr;
+			}
+
+			jobject local = env->NewDirectByteBuffer(g_packed.data(),
+				static_cast<jlong>(g_packed.capacity() * sizeof(float)));
+			clear_exception(env);
+			if (!local)
+				return;
+
+			g_packed_buffer = env->NewGlobalRef(local);
+			env->DeleteLocalRef(local);
+			g_packed_buffer_floats = g_packed.capacity();
+
+			if (!g_packed_buffer)
+				return;
+		}
+
+		jfloatArray mvp_array = env->NewFloatArray(16);
+		clear_exception(env);
+		if (!mvp_array)
+			return;
+		env->SetFloatArrayRegion(mvp_array, 0, 16, mvp);
+		clear_exception(env);
+
+		env->CallStaticVoidMethod(g_renderer_class, g_renderer_render,
+			g_packed_buffer,
+			static_cast<jint>(g_tris.size() / k_floats_per_vertex),
+			static_cast<jint>(g_lines.size() / k_floats_per_vertex),
+			mvp_array,
+			globals::esp_world_through_walls ? JNI_FALSE : JNI_TRUE);
+		report_exception(env, "EnhanceRenderer.render");
+
+		env->DeleteLocalRef(mvp_array);
+	}
+
+	// EnhanceRenderer.frame(), reached from the proxy on Fabric's world render
+	// event. Runs on the render thread, with that thread's own JNIEnv — which
+	// is the one the renderer needs and the one the worker's cached env is not.
+	void JNICALL native_frame(JNIEnv* env, jclass)
+	{
+		try
+		{
+			submit_frame(env);
+		}
+		catch (...)
+		{
+			clear_exception(env);
+
+			static bool reported = false;
+			if (!reported)
+			{
+				reported = true;
+				logger::log_error("[world_render] submit_frame threw — nothing was drawn this "
+				                  "frame. Everything after the throw is skipped, so an empty "
+				                  "screen here is one fault, not several.");
+			}
+		}
+	}
+
+	// Calls a static void method on the Java renderer, ignoring absence. Used
+	// for the two state setters, where failing is not worth aborting over.
+	void call_renderer_setter(JNIEnv* env, const char* name, const char* sig, jvalue arg)
+	{
+		if (!g_renderer_class)
+			return;
+
+		jmethodID mid = env->GetStaticMethodID(g_renderer_class, name, sig);
+		clear_exception(env);
+		if (!mid)
+			return;
+
+		env->CallStaticVoidMethodA(g_renderer_class, mid, &arg);
+		clear_exception(env);
+	}
+
+	// Builds a Proxy implementing the event's interface and hands it to
+	// WorldRenderEvents.<field>.register().
+	//
+	// Fabric's Event has no unregister, so this subscription outlives the
+	// module. EnhanceRenderer.setActive/setCurrent are what make that safe:
+	// teardown flips them, and the listener returns without calling native
+	// code. See the fields on the Java side.
+	// Resolves a class AND forces it through initialisation.
+	//
+	// sdk::classloader::find_class goes through KnotClassLoader.loadClass,
+	// which can leave the class merely loaded — not linked. JVMTI's
+	// GetClassFields then fails with CLASS_NOT_PREPARED, and that looked from
+	// the caller like a class with no fields at all: the subscription reported
+	// "WorldRenderEvents exposes no Event fields" on exactly the runs where
+	// nothing else had touched that class yet, and worked on the runs where
+	// the game happened to have initialised it first. Same feature, different
+	// outcome per launch, which is what made it look like a Fabric version
+	// difference rather than a linking one.
+	//
+	// (The root cause is worth naming: classloader.cpp calls
+	// loadClass(String, boolean) with only one argument, so `resolve` is
+	// whatever was on the stack.)
+	//
+	// Class.forName(name, true, loader) makes it deterministic — it also runs
+	// the static initialiser, which is what fills in the event fields read
+	// below.
+	jclass load_initialised(JNIEnv* env, const char* binary_name)
+	{
+		jclass cls = sdk::classloader::find_class(env, binary_name);
+		clear_exception(env);
+		if (!cls)
+			return nullptr;
+
+		jclass class_cls = env->FindClass("java/lang/Class");
+		clear_exception(env);
+		if (!class_cls)
+			return cls;
+
+		jmethodID for_name = env->GetStaticMethodID(class_cls, "forName",
+			"(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
+		jmethodID get_loader = env->GetMethodID(class_cls, "getClassLoader",
+			"()Ljava/lang/ClassLoader;");
+		clear_exception(env);
+		if (!for_name || !get_loader)
+			return cls;
+
+		jobject loader = env->CallObjectMethod(cls, get_loader);
+		clear_exception(env);
+
+		std::string dotted(binary_name);
+		std::replace(dotted.begin(), dotted.end(), '/', '.');
+
+		jstring jname = env->NewStringUTF(dotted.c_str());
+		clear_exception(env);
+		if (!jname)
+		{
+			if (loader) env->DeleteLocalRef(loader);
+			return cls;
+		}
+
+		jclass initialised = static_cast<jclass>(env->CallStaticObjectMethod(
+			class_cls, for_name, jname, JNI_TRUE, loader));
+		report_exception(env, "Class.forName");
+
+		env->DeleteLocalRef(jname);
+		if (loader) env->DeleteLocalRef(loader);
+
+		if (initialised)
+		{
+			env->DeleteLocalRef(cls);
+			return initialised;
+		}
+
+		return cls;
+	}
+
+	bool register_event(JNIEnv* env)
+	{
+		jclass class_cls = env->FindClass("java/lang/Class");
+		jclass proxy_cls = env->FindClass("java/lang/reflect/Proxy");
+		clear_exception(env);
+		if (!class_cls || !proxy_cls)
+			return false;
+
+		jmethodID get_loader = env->GetMethodID(class_cls, "getClassLoader", "()Ljava/lang/ClassLoader;");
+		jmethodID new_proxy = env->GetStaticMethodID(proxy_cls, "newProxyInstance",
+			"(Ljava/lang/ClassLoader;[Ljava/lang/Class;Ljava/lang/reflect/InvocationHandler;)Ljava/lang/Object;");
+		clear_exception(env);
+		if (!get_loader || !new_proxy)
+			return false;
+
+		jclass events_cls = load_initialised(env, k_events_class);
+		if (!events_cls)
+		{
+			logger::log_error("[world_render] could not resolve " +
+			                  std::string(k_events_class) + ". Asking the JVM what it "
+			                  "actually has loaded:");
+
+			// find_class swallows the ClassNotFoundException, so "absent" and
+			// "present under another name" look identical from here. The JVM's
+			// own list tells them apart.
+			sdk::java::dump_loaded_classes_matching(env, "WorldRenderEvents", 20);
+			sdk::java::dump_loaded_classes_matching(env, "fabric/api/client/rendering", 40);
+			sdk::java::dump_loaded_classes_matching(env, "fabric/api/event", 20);
+			return false;
+		}
+
+		// --- Discover the events instead of naming them ----------------------
+		//
+		// Every static field whose type is an Event is a candidate. The Event
+		// class itself comes out of the field signature rather than a constant,
+		// so a move of that package cannot break this the way the last one did.
+		struct discovered_t
+		{
+			std::string field;
+			std::string sig;     // e.g. "Lnet/fabricmc/fabric/api/event/Event;"
+		};
+
+		std::vector<discovered_t> found;
+
+		if (jvmtiEnv* jvmti = sdk::java::jvmti())
+		{
+			jint field_count = 0;
+			jfieldID* fields = nullptr;
+
+			const jvmtiError fields_err = jvmti->GetClassFields(events_cls, &field_count, &fields);
+			if (fields_err != JVMTI_ERROR_NONE)
+			{
+				// 22 is CLASS_NOT_PREPARED, which is the one worth naming: it
+				// means the class resolved but was never linked.
+				logger::log_error("[world_render] GetClassFields failed (jvmtiError " +
+				                  std::to_string(static_cast<int>(fields_err)) + ")");
+			}
+
+			if (fields_err == JVMTI_ERROR_NONE)
+			{
+				for (jint i = 0; i < field_count; ++i)
+				{
+					char* name = nullptr;
+					char* sig = nullptr;
+
+					if (jvmti->GetFieldName(events_cls, fields[i], &name, &sig, nullptr) == JVMTI_ERROR_NONE)
+					{
+						if (name && sig && std::strstr(sig, "/Event;"))
+							found.push_back({ name, sig });
+
+						if (name) jvmti->Deallocate(reinterpret_cast<unsigned char*>(name));
+						if (sig) jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
+					}
+				}
+
+				jvmti->Deallocate(reinterpret_cast<unsigned char*>(fields));
+			}
+		}
+
+		if (found.empty())
+		{
+			logger::log_error("[world_render] WorldRenderEvents exposes no Event fields — "
+			                  "this is not the class this expects.");
+			return false;
+		}
+
+		{
+			std::string names;
+			for (const auto& f : found)
+				names += (names.empty() ? "" : ", ") + f.field;
+			logger::log("[world_render] events offered by this Fabric API: " + names);
+		}
+
+		// Preferred ones first, in the order listed; everything else after, so
+		// an unfamiliar API still gets tried rather than refused.
+		std::stable_sort(found.begin(), found.end(),
+			[](const discovered_t& a, const discovered_t& b)
+			{
+				auto rank = [](const std::string& name) -> int
+				{
+					int i = 0;
+					for (const char* pref : k_event_preference)
+					{
+						if (name == pref)
+							return i;
+						++i;
+					}
+					return i;   // unlisted: after every named preference
+				};
+
+				return rank(a.field) < rank(b.field);
+			});
+
+		jmethodID ctor = env->GetMethodID(g_renderer_class, "<init>", "()V");
+		clear_exception(env);
+		jobject handler = ctor ? env->NewObject(g_renderer_class, ctor) : nullptr;
+		clear_exception(env);
+		if (!handler)
+		{
+			logger::log_error("[world_render] could not instantiate the renderer handler");
+			return false;
+		}
+
+		bool registered = false;
+
+		for (const auto& candidate : found)
+		{
+			// Event class from the field's own signature: strip the leading L
+			// and the trailing ;.
+			const std::string event_binary = candidate.sig.substr(1, candidate.sig.size() - 2);
+
+			jclass event_cls = sdk::classloader::find_class(env, event_binary.c_str());
+			clear_exception(env);
+			jmethodID register_mid = event_cls
+				? env->GetMethodID(event_cls, "register", "(Ljava/lang/Object;)V")
+				: nullptr;
+			clear_exception(env);
+			if (event_cls)
+				env->DeleteLocalRef(event_cls);
+
+			if (!register_mid)
+				continue;
+
+			const std::string iface_name =
+				std::string(k_events_class) + "$" + field_to_interface_name(candidate.field);
+
+			jclass iface = sdk::classloader::find_class(env, iface_name.c_str());
+			clear_exception(env);
+			if (!iface)
+				continue;
+
+			jfieldID field = env->GetStaticFieldID(events_cls, candidate.field.c_str(),
+				candidate.sig.c_str());
+			clear_exception(env);
+			if (!field)
+			{
+				env->DeleteLocalRef(iface);
+				continue;
+			}
+
+			jobject event = env->GetStaticObjectField(events_cls, field);
+			clear_exception(env);
+			if (!event)
+			{
+				env->DeleteLocalRef(iface);
+				continue;
+			}
+
+			// The proxy must be defined in a loader that can see the interface;
+			// the interface's own is the one loader guaranteed to.
+			jobject loader = env->CallObjectMethod(iface, get_loader);
+			clear_exception(env);
+
+			jobjectArray ifaces = env->NewObjectArray(1, class_cls, iface);
+			clear_exception(env);
+
+			jobject proxy = ifaces
+				? env->CallStaticObjectMethod(proxy_cls, new_proxy, loader, ifaces, handler)
+				: nullptr;
+			clear_exception(env);
+
+			if (proxy)
+			{
+				// Publish the handler as current BEFORE subscribing: the event
+				// can fire on the very next frame, and a listener that does not
+				// match `current` does nothing.
+				jvalue v;
+				v.l = handler;
+				call_renderer_setter(env, "setCurrent", "(Ljava/lang/Object;)V", v);
+
+				env->CallVoidMethod(event, register_mid, proxy);
+
+				if (env->ExceptionCheck())
+				{
+					env->ExceptionClear();
+					logger::log_error("[world_render] register() threw for " + candidate.field);
+				}
+				else
+				{
+					registered = true;
+					logger::log("[world_render] subscribed to WorldRenderEvents." +
+					            candidate.field + " — no class was hooked or redefined.");
+				}
+
+				env->DeleteLocalRef(proxy);
+			}
+
+			if (ifaces) env->DeleteLocalRef(ifaces);
+			if (loader) env->DeleteLocalRef(loader);
+			env->DeleteLocalRef(event);
+			env->DeleteLocalRef(iface);
+
+			if (registered)
+				break;
+		}
+
+		env->DeleteLocalRef(handler);
+
+		if (!registered)
+			logger::log_error("[world_render] none of the offered events could be "
+			                  "subscribed to — see the list logged above.");
+
+		return registered;
+	}
+}
+
+bool enhance::modules::world_render_hook::has_mapping()
+{
+	return mapping_present();
+}
+
+void enhance::modules::world_render_hook::dump_mappings()
+{
+	auto env = enhance::instance ? enhance::instance->get_env() : nullptr;
+	if (env)
+		sdk::java::dump_render_mappings(env);
+}
+
+bool enhance::modules::world_render_hook::is_attached()
+{
+	return g_attached;
+}
+
+bool enhance::modules::world_render_hook::init()
+{
+	if (g_attached)
+		return true;
+
+	auto env = enhance::instance ? enhance::instance->get_env() : nullptr;
+	auto jvm = enhance::instance ? enhance::instance->get_java_vm() : nullptr;
+	if (!env || !jvm)
+		return false;
+
+	if (!mapping_present())
+	{
+		logger::log_error("[world_render] core class mappings missing — the renderer stays "
+		                  "off. Fill them in mappings.hpp from the [jvmti] dump above.");
+		return false;
+	}
+
+	// --- Java renderer, defined straight from the DLL's memory --------------
+	g_renderer_class = sdk::java::define_from_memory(env, k_renderer_binary_name,
+	                                                  enhance_renderer_class,
+	                                                  enhance_renderer_class_size);
+	if (!g_renderer_class)
+	{
+		logger::log_error("[world_render] could not define the Java renderer class");
+		return false;
+	}
+
+	g_renderer_render = env->GetStaticMethodID(g_renderer_class, "render",
+		"(Ljava/nio/ByteBuffer;II[FZ)V");
+	clear_exception(env);
+	if (!g_renderer_render)
+	{
+		logger::log_error("[world_render] EnhanceRenderer.render not found");
+		return false;
+	}
+
+	// Text is optional: an older EnhanceRenderer already defined into this JVM
+	// by a previous injection has no renderText, and boxes should still work.
+	g_renderer_render_text = env->GetStaticMethodID(g_renderer_class, "renderText",
+		"(Ljava/nio/ByteBuffer;I[FZ)V");
+	clear_exception(env);
+	g_renderer_upload_font = env->GetStaticMethodID(g_renderer_class, "uploadFont",
+		"(Ljava/nio/ByteBuffer;II)I");
+	clear_exception(env);
+
+	if (!g_renderer_render_text || !g_renderer_upload_font)
+	{
+		logger::log("[world_render] this JVM holds an older EnhanceRenderer without the text "
+		            "entry points — in-world name tags stay off until the game restarts. "
+		            "Boxes are unaffected.");
+	}
+
+	// --- Minecraft accessors ------------------------------------------------
+	g_mc_class = global_class(env, sdk::mappings::minecraftclass_sig);
+	g_world_class = global_class(env, sdk::mappings::client_world_class_sig);
+	g_entity_class = global_class(env, sdk::mappings::entity_class_sig);
+	g_box_class = global_class(env, "net/minecraft/class_238");
+
+	if (!g_mc_class || !g_world_class || !g_entity_class || !g_box_class)
+	{
+		logger::log_error("[world_render] core Minecraft classes not resolvable");
+		return false;
+	}
+
+	{
+		jclass list_local = env->FindClass("java/util/List");
+		clear_exception(env);
+		if (list_local)
+		{
+			g_list_class = static_cast<jclass>(env->NewGlobalRef(list_local));
+			g_mid_list_size = env->GetMethodID(list_local, "size", "()I");
+			clear_exception(env);
+			g_mid_list_get = env->GetMethodID(list_local, "get", "(I)Ljava/lang/Object;");
+			clear_exception(env);
+			env->DeleteLocalRef(list_local);
+		}
+	}
+
+	g_fid_mc_instance = env->GetStaticFieldID(g_mc_class, sdk::mappings::minecraftclient_name, sdk::mappings::minecraftclient_sig);
+	clear_exception(env);
+	g_fid_mc_world = env->GetFieldID(g_mc_class, sdk::mappings::world_name, sdk::mappings::world_sig);
+	clear_exception(env);
+	g_fid_mc_player = env->GetFieldID(g_mc_class, sdk::mappings::player_name, sdk::mappings::player_sig);
+	clear_exception(env);
+
+	g_fid_world_players = env->GetFieldID(g_world_class, sdk::mappings::players_field_name, sdk::mappings::players_field_sig);
+	clear_exception(env);
+
+	g_mid_entity_get_x = env->GetMethodID(g_entity_class, sdk::mappings::entity_get_x_name, sdk::mappings::entity_get_x_sig);
+	clear_exception(env);
+	g_mid_entity_get_y = env->GetMethodID(g_entity_class, sdk::mappings::entity_get_y_name, sdk::mappings::entity_get_y_sig);
+	clear_exception(env);
+	g_mid_entity_get_z = env->GetMethodID(g_entity_class, sdk::mappings::entity_get_z_name, sdk::mappings::entity_get_z_sig);
+	clear_exception(env);
+	g_fid_entity_box = env->GetFieldID(g_entity_class, sdk::mappings::get_bounding_box_name, sdk::mappings::get_bounding_box_sig);
+	clear_exception(env);
+
+	g_fid_box_min_x = env->GetFieldID(g_box_class, sdk::mappings::box_min_x_name, sdk::mappings::box_min_x_sig);
+	clear_exception(env);
+	g_fid_box_min_y = env->GetFieldID(g_box_class, sdk::mappings::box_min_y_name, sdk::mappings::box_min_y_sig);
+	clear_exception(env);
+	g_fid_box_min_z = env->GetFieldID(g_box_class, sdk::mappings::box_min_z_name, sdk::mappings::box_min_z_sig);
+	clear_exception(env);
+	g_fid_box_max_x = env->GetFieldID(g_box_class, sdk::mappings::box_max_x_name, sdk::mappings::box_max_x_sig);
+	clear_exception(env);
+	g_fid_box_max_y = env->GetFieldID(g_box_class, sdk::mappings::box_max_y_name, sdk::mappings::box_max_y_sig);
+	clear_exception(env);
+	g_fid_box_max_z = env->GetFieldID(g_box_class, sdk::mappings::box_max_z_name, sdk::mappings::box_max_z_sig);
+	clear_exception(env);
+
+	if (!g_fid_mc_instance || !g_fid_mc_world || !g_fid_world_players ||
+	    !g_mid_list_size || !g_mid_list_get || !g_fid_entity_box ||
+	    !g_fid_box_min_x || !g_fid_box_max_z)
+	{
+		logger::log_error("[world_render] required Minecraft accessors missing");
+		return false;
+	}
+
+	// --- Optional: per-frame interpolation ----------------------------------
+	// Missing mappings here only cost smoothness, so they must never block the
+	// hook. Without them the boxes sit on the raw tick position.
+	if (sdk::mappings::entity_last_render_x_name[0])
+	{
+		g_fid_last_render_x = env->GetFieldID(g_entity_class, sdk::mappings::entity_last_render_x_name, sdk::mappings::entity_last_render_sig);
+		clear_exception(env);
+		g_fid_last_render_y = env->GetFieldID(g_entity_class, sdk::mappings::entity_last_render_y_name, sdk::mappings::entity_last_render_sig);
+		clear_exception(env);
+		g_fid_last_render_z = env->GetFieldID(g_entity_class, sdk::mappings::entity_last_render_z_name, sdk::mappings::entity_last_render_sig);
+		clear_exception(env);
+	}
+
+	if (sdk::mappings::mc_render_tick_counter_name[0] && sdk::mappings::render_tick_counter_class_sig[0])
+	{
+		g_fid_mc_tick_counter = env->GetFieldID(g_mc_class, sdk::mappings::mc_render_tick_counter_name, sdk::mappings::mc_render_tick_counter_sig);
+		clear_exception(env);
+
+		if (jclass counter_cls = sdk::classloader::find_class(env, sdk::mappings::render_tick_counter_class_sig))
+		{
+			g_mid_tick_progress = resolve_tick_progress(env, counter_cls);
+			env->DeleteLocalRef(counter_cls);
+		}
+	}
+
+	// --- Optional: name tag sources -----------------------------------------
+	g_mid_scoreboard_name = env->GetMethodID(g_entity_class,
+		sdk::mappings::entity_scoreboard_name_name,
+		sdk::mappings::entity_scoreboard_name_sig);
+	clear_exception(env);
+
+	g_living_class = global_class(env, sdk::mappings::living_entity_class_sig);
+	if (g_living_class)
+	{
+		g_mid_get_health = env->GetMethodID(g_living_class,
+			sdk::mappings::living_entity_get_health_name,
+			sdk::mappings::living_entity_get_health_sig);
+		clear_exception(env);
+		g_mid_get_max_health = env->GetMethodID(g_living_class,
+			sdk::mappings::living_entity_get_max_health_name,
+			sdk::mappings::living_entity_get_max_health_sig);
+		clear_exception(env);
+	}
+
+	if (!g_fid_last_render_x || !g_mid_tick_progress)
+	{
+		logger::log("[world_render] interpolation mappings absent — boxes will sit on the "
+		            "tick position (no per-frame smoothing).");
+	}
+
+	// --- Native entry point -------------------------------------------------
+	// Bound on our own class, which nothing else owns — the whole point of the
+	// event route is that no Minecraft class is modified.
+	{
+		JNINativeMethod native = {
+			const_cast<char*>("frame"),
+			const_cast<char*>("()V"),
+			reinterpret_cast<void*>(native_frame),
+		};
+
+		if (env->RegisterNatives(g_renderer_class, &native, 1) != JNI_OK)
+		{
+			clear_exception(env);
+			logger::log_error("[world_render] RegisterNatives failed for EnhanceRenderer.frame");
+			return false;
+		}
+		clear_exception(env);
+		g_natives_registered = true;
+	}
+
+	// Arm before subscribing, or the first event would find the listener
+	// inactive and skip a frame.
+	{
+		jvalue v;
+		v.z = JNI_TRUE;
+		call_renderer_setter(env, "setActive", "(Z)V", v);
+	}
+
+	// --- Subscribe -----------------------------------------------------------
+	if (!register_event(env))
+	{
+		jvalue v;
+		v.z = JNI_FALSE;
+		call_renderer_setter(env, "setActive", "(Z)V", v);
+		env->UnregisterNatives(g_renderer_class);
+		clear_exception(env);
+		g_natives_registered = false;
+		return false;
+	}
+
+	g_attached = true;
+	logger::log("[world_render] in-world Java renderer attached");
+	return true;
+}
+
+void enhance::modules::world_render_hook::shutdown()
+{
+	if (!g_attached)
+		return;
+
+	g_attached = false;
+
+	auto env = enhance::instance ? enhance::instance->get_env() : nullptr;
+
+	// The subscription cannot be undone — Fabric's Event has no unregister —
+	// so the listener has to be told to stand down instead. Order matters:
+	// setActive(false) stops it entering native code, and only then is it safe
+	// to unbind the native method that is about to disappear with the module.
+	if (env)
+	{
+		jvalue off;
+		off.z = JNI_FALSE;
+		call_renderer_setter(env, "setActive", "(Z)V", off);
+
+		jvalue none;
+		none.l = nullptr;
+		call_renderer_setter(env, "setCurrent", "(Ljava/lang/Object;)V", none);
+
+		if (g_natives_registered && g_renderer_class)
+		{
+			env->UnregisterNatives(g_renderer_class);
+			clear_exception(env);
+		}
+	}
+
+	g_natives_registered = false;
+
+	if (env && g_packed_buffer)
+	{
+		env->DeleteGlobalRef(g_packed_buffer);
+		g_packed_buffer = nullptr;
+		g_packed_buffer_floats = 0;
+	}
+
+	if (env && g_text_buffer)
+	{
+		env->DeleteGlobalRef(g_text_buffer);
+		g_text_buffer = nullptr;
+		g_text_buffer_floats = 0;
+	}
+
+	if (env)
+	{
+		if (g_mc_class) { env->DeleteGlobalRef(g_mc_class); g_mc_class = nullptr; }
+		if (g_world_class) { env->DeleteGlobalRef(g_world_class); g_world_class = nullptr; }
+		if (g_entity_class) { env->DeleteGlobalRef(g_entity_class); g_entity_class = nullptr; }
+		if (g_box_class) { env->DeleteGlobalRef(g_box_class); g_box_class = nullptr; }
+		if (g_list_class) { env->DeleteGlobalRef(g_list_class); g_list_class = nullptr; }
+		if (g_living_class) { env->DeleteGlobalRef(g_living_class); g_living_class = nullptr; }
+	}
+
+	g_renderer_class = nullptr;   // owned by sdk::java
+	g_renderer_render = nullptr;
+	g_renderer_render_text = nullptr;
+	g_renderer_upload_font = nullptr;
+
+	// The GL texture belongs to the Java side and survives this; re-uploading
+	// on the next attach is what keeps it correct if the atlas was rebuilt.
+	g_font_uploaded = false;
+}
