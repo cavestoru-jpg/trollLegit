@@ -88,8 +88,12 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>C:\Program Files\Java\jdk-21.0.11\include;C:\Program Files\Java\jdk-21.0.11\include\win32;C:\Program Files\Java\jdk-21.0.11\include\win32\bridge;$(WindowsSDK_IncludePath);$(ProjectDir);$(ProjectDir)utils\jnihook-master\include;$(ProjectDir)utils\imgui;$(ProjectDir)utils\thirdparty;$(ProjectDir)enhance\gui\data;$(ProjectDir)enhance\gui;$(ProjectDir)enhance\gui\ui;$(IncludePath)</IncludePath>
-    <LibraryPath>C:\Program Files\Java\jdk-21.0.11\lib;$(ProjectDir)utils\minhook\lib;$(LibraryPath)</LibraryPath>
+    <!-- JDK 21 home. Overridable from the build script (/p:JdkHome=...) so a
+         machine with a different patch level still resolves jni.h; defaults to
+         the path this project was pinned to. -->
+    <JdkHome Condition="'$(JdkHome)'==''">C:\Program Files\Java\jdk-21.0.11</JdkHome>
+    <IncludePath>$(JdkHome)\include;$(JdkHome)\include\win32;$(JdkHome)\include\win32\bridge;$(WindowsSDK_IncludePath);$(ProjectDir);$(ProjectDir)utils\jnihook-master\include;$(ProjectDir)utils\imgui;$(ProjectDir)utils\thirdparty;$(ProjectDir)enhance\gui\data;$(ProjectDir)enhance\gui;$(ProjectDir)enhance\gui\ui;$(IncludePath)</IncludePath>
+    <LibraryPath>$(JdkHome)\lib;$(ProjectDir)utils\minhook\lib;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -164,7 +168,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
-      <AdditionalDependencies>C:\Program Files\Java\jdk-21.0.11\lib\jvm.lib;opengl32.lib;libMinHook-x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(JdkHome)\lib\jvm.lib;opengl32.lib;libMinHook-x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -174,6 +178,8 @@
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="enhance\modules\mace\mace.cpp" />
     <ClCompile Include="enhance\modules\shield_breaker\shield_breaker.cpp" />
+    <ClCompile Include="sdk\mappings\mappings.cpp" />
+    <ClCompile Include="sdk\version\version.cpp" />
     <ClCompile Include="sdk\render\render_view.cpp" />
     <ClCompile Include="sdk\java\jvmti_env.cpp" />
     <ClCompile Include="sdk\java\interp.cpp" />

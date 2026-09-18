@@ -2,6 +2,7 @@
 #include <sdk/minecraft/player/player.h>
 #include <sdk/minecraft/world/world.h>
 #include <sdk/classloader.h>
+#include <sdk/version/version.h>
 #include "enhance.h"
 #include "globals/globals.h"
 #include "hooks/Hook.h"
@@ -87,6 +88,15 @@ bool enhance::enhance_client::attach()
 	{
 		printf("[ENHANCE] Detected: Vanilla\n");
 	}
+
+	// Every mapping constant is empty until this runs, so it has to happen before
+	// any module or hook looks a symbol up -- and it needs the class loader, which
+	// is why it sits here and not in run().
+	if (!sdk::mappings::bind(env))
+	{
+		logger::log_error("[ENHANCE] mapping bind failed; the client cannot see the game");
+	}
+	printf("[ENHANCE] Minecraft: %s\n", sdk::version::describe());
 
 	if (Hook::init())
 	{
@@ -438,8 +448,15 @@ void enhance::enhance_client::unload()
 	{
 	}
 
-	try { enhance::modules::silent_rotation_hook::shutdown(); } catch (...) {}
+	// Order matters: tick_movement_hook's callback calls into silent_rotation_hook
+	// (fire_pending_attack, which reads its cached method ids and the MAIN_HAND
+	// global ref). Detach the tick hook FIRST -- JNIHook_Detach takes a safepoint,
+	// so once it returns no tick callback can still be running -- and only then
+	// tear down silent_rotation_hook and free that global ref. The reverse order
+	// let a tick fire between the two and call into half-freed state, which is the
+	// unload crash.
 	try { enhance::modules::aiming::tick_movement_hook::shutdown(); } catch (...) {}
+	try { enhance::modules::silent_rotation_hook::shutdown(); } catch (...) {}
 	try { enhance::modules::world_render_hook::shutdown(); } catch (...) {}
 
 	// Every JNIHook rewrites its declaring class to call into this DLL. If any

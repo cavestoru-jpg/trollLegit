@@ -20,6 +20,14 @@ injector/bytes.hpp
 # A full copy of an older version of this project sitting inside itself (~279 MB).
 enhance-client-main/
 
+# Downloaded mapping artifacts for all 24 supported versions (~220 MB): Mojang
+# ProGuard files, Fabric intermediary jars, and the pieces of the 26.x client jars
+# that tools/mc_artifacts.py reads through range requests. All of it is fetched
+# from published, immutable URLs and verified by sha1, so it is a cache and not a
+# source. What IS committed is what the cache produces: tools/symbols/symbols.json
+# and sdk/mappings/mappings_gen.inc, so a build with a cold cache still works.
+tools/mappings/cache/
+
 # IDE / local
 .vs/
 .idea/
@@ -29,3 +37,6 @@ enhance-client-main/
 # Runtime
 enhance_log.txt
 crash-*.txt
+
+# Python bytecode cache from the mapping tools.
+__pycache__/
