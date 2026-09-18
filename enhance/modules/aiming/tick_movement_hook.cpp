@@ -539,7 +539,19 @@ static void hkTick(JNIEnv* env, jobject thiz)
 	float dyaw = 0.0f;
 	float dpitch = 0.0f;
 
-	if (player && g_mid_get_yaw && g_mid_set_yaw)
+	// Move correction decides whether the BODY moves along the silent angle or
+	// along the real one. Off leaves the player's own rotation alone through
+	// tick(), so travel -> updateVelocity -> getYaw all compute against where the
+	// camera actually points; the look packet still carries the silent angle,
+	// because silent_rotation_hook swaps it around sendMovementPackets on its own.
+	// Strict wraps the whole tick, which is what makes the movement match what the
+	// server was told.
+	//
+	// Until now this setting was stored, drawn and never read: the wrap happened
+	// unconditionally, so the control was inert on every version.
+	const bool correct_movement = globals::aiming_movement_correction != 0;
+
+	if (player && correct_movement && g_mid_get_yaw && g_mid_set_yaw)
 	{
 		const silent_angles_t want = resolve_silent_angles(env, player);
 		if (want.active)

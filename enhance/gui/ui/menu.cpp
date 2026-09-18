@@ -305,12 +305,10 @@ void page_combat_aim( ) {
 				} );
 			}
 
-			{
-				const bool gated = begin_gate( sdk::caps::feature::input_write );
-				w.combo( xorstr_( "Move correction##aim" ), &globals::aiming_movement_correction,
-				{ xorstr_( "Off" ), xorstr_( "Strict" ) } );
-				end_gate( gated, sdk::caps::feature::input_write );
-			}
+			w.combo( xorstr_( "Move correction##aim" ), &globals::aiming_movement_correction,
+			         { xorstr_( "Off" ), xorstr_( "Strict" ) } );
+			if ( globals::aiming_movement_correction == 0 )
+				TextDisabled( xorstr_( "body moves along your real angle" ) );
 			w.slider_int( xorstr_( "Ticks until reset##aim" ), &globals::aiming_ticks_until_reset, 1, 30, "%d" );
 			w.slider_float( xorstr_( "Reset threshold##aim" ), &globals::aiming_reset_threshold, 1.f, 180.f, "%.0f" );
 
