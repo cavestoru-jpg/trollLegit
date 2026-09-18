@@ -1,6 +1,7 @@
 #include <enhance/enhance.h>
 #include "minecraft.h"
 #include <sdk/mappings/mappings.hpp>
+#include <sdk/compat/compat.h>
 #include <sdk/classloader.h>
 
 std::unique_ptr<sdk::minecraft_client> sdk::instance;
@@ -318,21 +319,11 @@ bool sdk::minecraft_client::do_attack()
 			return 70.0f;
 		}
 
-		jmethodID get_fov_mid = env->GetMethodID(gamerenderer_class, sdk::mappings::get_fov_name, sdk::mappings::get_fov_sig);
-		check_jni_exception(env, "GetMethodID for get_fov");
-		if (!get_fov_mid)
-		{
-			env->DeleteLocalRef(camera);
-			env->DeleteLocalRef(gamerenderer_class);
-			env->DeleteLocalRef(game_renderer);
-			env->DeleteLocalRef(minecraft_class);
-			env->DeleteLocalRef(minecraft);
-			return 70.0f;
-		}
-
-		jfloat tick_progress = 0.0f;
-		jboolean changing_fov = JNI_TRUE;
-		jfloat fov = env->CallFloatMethod(game_renderer, get_fov_mid, camera, tick_progress, changing_fov);
+		// Shape varies by version -- see sdk/compat. 0 means this version's form
+		// is not one we can call, and the vanilla default is the honest answer.
+		float fov = sdk::compat::field_of_view(env, game_renderer, camera, 0.0f);
+		if (fov <= 0.0f)
+			fov = 70.0f;
 
 		env->DeleteLocalRef(camera);
 		env->DeleteLocalRef(gamerenderer_class);
@@ -479,10 +470,9 @@ bool sdk::minecraft_client::do_attack()
 		result.pitch = env->CallFloatMethod(camera, camera_get_pitch_mid);
 
 		// Get FOV
-		jmethodID get_fov_mid = env->GetMethodID(gamerenderer_class, sdk::mappings::get_fov_name, sdk::mappings::get_fov_sig);
-		check_jni_exception(env, "GetMethodID for get_fov (camera_data)");
-		if (get_fov_mid) {
-			result.fov = env->CallFloatMethod(game_renderer, get_fov_mid, camera, 0.0f, JNI_TRUE);
+		const float fov = sdk::compat::field_of_view(env, game_renderer, camera, 0.0f);
+		if (fov > 0.0f) {
+			result.fov = fov;
 		}
 
 		result.valid = true;

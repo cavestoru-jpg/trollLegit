@@ -83,12 +83,10 @@
   "get_fov": {
     "versions": [
       { "until": "1.21.1", "desc": "(Lnet/minecraft/client/Camera;FZ)D",
-        "blocked_by": "found, but it returned double before 1.21.2 and float after. The three call sites use CallFloatMethod, so binding this would read a double return as a float. Unblock with the sdk/compat FOV helper.",
-        "why": "GameRenderer.getFov returned double until 1.21.2" },
+        "why": "GameRenderer.getFov returned double until 1.21.2. sdk::compat::field_of_view picks CallDoubleMethod or CallFloatMethod from the bound descriptor's return type" },
       { "since": "26.1", "owner": "net/minecraft/client/Camera", "name": "getFov",
         "desc": "()F",
-        "blocked_by": "found, but the call shape changed again: GameRenderer.getFov(Camera,float,boolean) became a no-arg getter on Camera. sdk/render/render_view.cpp still passes three arguments. Unblock with the same helper.",
-        "why": "FOV state moved onto Camera in 26.1" }
+        "why": "FOV state moved onto Camera in 26.1 and the getter lost its arguments. The same helper reads the arity off the descriptor, so the call site does not branch on a version number" }
     ]
   },
 
@@ -96,9 +94,27 @@
     "versions": [
       { "since": "26.3",
         "desc": "(Lnet/minecraft/world/InteractionHand;Lnet/minecraft/world/item/component/SwingAnimation;Z)Z",
-        "blocked_by": "found, but 26.3 added a SwingAnimation component argument and a boolean return. Every caller passes a hand alone. Unblock when the attack path can build a SwingAnimation.",
-        "why": "26.3 reworked swings into item components; swing(InteractionHand) is gone" }
+        "why": "26.3 reworked swings into item components: swing(InteractionHand) gained a SwingAnimation argument and a boolean return. sdk::compat::swing_hand reads the arity off the descriptor and passes SwingAnimation.DEFAULT" }
     ]
+  },
+
+  "swing_animation_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/world/item/component/SwingAnimation",
+    "emit_sig": "swing_animation_class_sig",
+    "why": "26.3 only; the component 26.3's swing() requires"
+  },
+
+  "swing_animation_default": {
+    "new": true,
+    "kind": "field",
+    "owner": "net/minecraft/world/item/component/SwingAnimation",
+    "name": "DEFAULT",
+    "desc": "Lnet/minecraft/world/item/component/SwingAnimation;",
+    "emit_name": "swing_animation_default_name",
+    "emit_sig": "swing_animation_default_sig",
+    "why": "the stock swing; what an attack that carries no item-specific animation should send"
   },
 
   "trident_on_stopped_using": {

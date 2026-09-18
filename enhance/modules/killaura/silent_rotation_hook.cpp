@@ -3,6 +3,7 @@
 #include "../../utils/logger.h"
 #include <sdk/mappings/mappings.hpp>
 #include <sdk/classloader.h>
+#include <sdk/compat/compat.h>
 #include <sdk/render/render_view.h>
 #include <atomic>
 #include <string>
@@ -211,10 +212,12 @@ void enhance::modules::silent_rotation_hook::fire_pending_attack(JNIEnv* env, jo
 						// Swing the arm the way vanilla doAttack does, right after
 						// the attack: this plays the animation client-side AND sends
 						// HandSwingC2SPacket. attackEntity alone does neither.
-						if (g_mid_swing_hand && g_main_hand)
+						// Through the compat helper: 26.3 turned swing(Hand) into
+						// swing(Hand, SwingAnimation, boolean), so the argument list
+						// is a property of the version, not of this call site.
+						if (g_main_hand)
 						{
-							env->CallVoidMethod(player, g_mid_swing_hand, g_main_hand);
-							if (env->ExceptionCheck()) env->ExceptionClear();
+							sdk::compat::swing_hand(env, player, g_main_hand);
 						}
 
 						env->DeleteLocalRef(im);

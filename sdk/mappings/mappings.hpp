@@ -890,6 +890,16 @@ namespace sdk
 		// Hand enum + Hand.MAIN_HAND reuse the existing hand_class_sig /
 		// hand_main_hand_name / hand_main_hand_sig defined above.
 
+		// 26.3 turned swings into an item component: swing(Hand) became
+		// swing(Hand, SwingAnimation, boolean). SwingAnimation.DEFAULT is the
+		// stock animation, which is what an attack with no item-specific swing
+		// should carry. Absent on every earlier version, where the two-argument
+		// form does not exist -- sdk::compat::swing_hand picks the shape from the
+		// descriptor rather than from a version number.
+		extern const char* swing_animation_class_sig;
+		extern const char* swing_animation_default_name;
+		extern const char* swing_animation_default_sig;
+
 		// --- binding ------------------------------------------------------
 
 		// Identifies the namespace the JVM is using and points every constant

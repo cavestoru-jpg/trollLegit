@@ -316,6 +316,28 @@ def main():
     print("unresolved / to review : %d" % len(problems))
     print("orphan _sig constants  : %d" % len(unconsumed))
 
+    # Symbols that exist on no version the pinned header knew about, so there is
+    # nothing to seed them from. 26.x keeps introducing API the 1.21.11 client had
+    # no reason to name, and the spec has to be able to grow.
+    added = []
+    for sym_id, ov in sorted(overrides.items()):
+        if not ov.get("new"):
+            continue
+        applied.add(sym_id)
+        entry = {"id": sym_id, "kind": ov["kind"],
+                 "emit_name": ov.get("emit_name"), "emit_sig": ov.get("emit_sig"),
+                 "seed": {"why": ov.get("why")}}
+        if ov["kind"] == "class":
+            entry["class"] = ov["class"]
+        else:
+            entry.update({"owner": ov["owner"], "name": ov["name"], "desc": ov["desc"]})
+        if ov.get("versions"):
+            entry["versions"] = ov["versions"]
+        symbols.append(entry)
+        added.append(sym_id)
+    if added:
+        print("declared-new symbols   : %s" % ", ".join(added))
+
     stale = sorted(k for k in overrides if k not in applied)
     if stale:
         print("stale overrides        : %s" % ", ".join(stale))

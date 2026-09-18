@@ -3,6 +3,7 @@
 #include <enhance/enhance.h>
 #include <sdk/mappings/mappings.hpp>
 #include <sdk/classloader.h>
+#include <sdk/compat/compat.h>
 #include <sdk/java/interp.h>
 
 #define _USE_MATH_DEFINES
@@ -132,21 +133,18 @@ bool sdk::render::sample_camera(double& out_x, double& out_y, double& out_z,
 		out_pitch = env->CallFloatMethod(camera, camera_pitch_mid);
 		clear_exception(env);
 
-		// getFov(camera, tickProgress, changingFov). The game builds its own
-		// projection with the live tick fraction, so passing a constant here
-		// asks for a different FOV than the one the frame was rendered with —
-		// which radially mis-scales every box for the ~0.25 s the FOV takes to
-		// settle after a sprint, bow pull or spyglass.
-		jmethodID get_fov_mid = env->GetMethodID(gamerenderer_class, sdk::mappings::get_fov_name, sdk::mappings::get_fov_sig);
-		clear_exception(env);
-		if (get_fov_mid)
-		{
-			const jfloat fov = env->CallFloatMethod(game_renderer, get_fov_mid, camera,
-			                                        sdk::java::tick_progress(), JNI_TRUE);
-			clear_exception(env);
-			if (fov > 1.0f && fov < 179.0f)
-				out_fov = fov;
-		}
+		// The game builds its own projection with the live tick fraction, so
+		// passing a constant here asks for a different FOV than the one the frame
+		// was rendered with — which radially mis-scales every box for the ~0.25 s
+		// the FOV takes to settle after a sprint, bow pull or spyglass.
+		//
+		// Through the compat helper because the call shape is version-specific:
+		// a three-argument method on GameRenderer returning double, then float,
+		// and from 26.1 a no-argument getter on Camera.
+		const float fov = sdk::compat::field_of_view(env, game_renderer, camera,
+		                                             sdk::java::tick_progress());
+		if (fov > 0.0f)
+			out_fov = fov;
 
 		ok = true;
 	} while (false);

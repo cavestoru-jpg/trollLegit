@@ -178,6 +178,7 @@
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="enhance\modules\mace\mace.cpp" />
     <ClCompile Include="enhance\modules\shield_breaker\shield_breaker.cpp" />
+    <ClCompile Include="sdk\compat\compat.cpp" />
     <ClCompile Include="sdk\mappings\mappings.cpp" />
     <ClCompile Include="sdk\version\version.cpp" />
     <ClCompile Include="sdk\render\render_view.cpp" />
