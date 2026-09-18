@@ -6,12 +6,12 @@ mistakes look correct right up until the game crashes or the anti-cheat flags yo
 
 ## What this is
 
-A native C++ DLL injected into Fabric-modded **Minecraft 1.21.11**. It reaches into the JVM
+A native C++ DLL injected into **Minecraft 1.20 through 26.3**. It reaches into the JVM
 through JNI/JVMTI, hooks Java methods by rewriting their declaring classes, and draws a menu
 with ImGui. The injector carries the DLL inside itself.
 
-- Target: Minecraft 1.21.11, Fabric 0.19.3, **Yarn intermediary** mappings (`class_XXXX`,
-  `method_XXXXX`, `field_XXXX`).
+- Target: every stable release from 1.20 to 26.3, in whichever of three namespaces the JVM
+  is actually using — see "Multi-version" below. One DLL, no per-version builds.
 - Build: `tools/build.ps1`. Five steps; step `[0/5]` validates mappings and fails the build.
 - Runtime log: `%LOCALAPPDATA%\Temp\enhance_log.txt`. It reaches tens of MB — always filter,
   never read whole.
@@ -47,21 +47,87 @@ reference. Two floats packed into one `std::atomic<uint64_t>` so the reader can 
 fresh yaw against a stale pitch, plus a timestamp so a stalled producer expires instead of
 freezing the consumer onto a dead target.
 
-### 3. Never guess an intermediary name
+### 3. Never guess a symbol, and never hand-write one
 
-`method_5695` looks like a getter and is `(F)F`. Guessing costs a debugging session.
+`method_5695` looks like a getter and is `(F)F`. Guessing costs a debugging session — and
+now it would cost 24 of them, because the same guess has to hold on every supported version.
 
-- Every name goes in `sdk/mappings/mappings.hpp`.
-- `tools/verify_mappings.py` (build step `[0/5]`) proves the name **exists in Yarn**. It does
-  **not** check the descriptor or the owning class.
-- So also confirm each with javap:
+- **Symbols are declared once, by their official Mojang name**, in `tools/symbols/symbols.json`
+  (`{id, kind, owner, name, desc}`). Everything else is derived. Do not type a `class_NNNN`
+  or an obfuscated name anywhere in C++.
+- Find the right one with `tools/find_symbol.py`, which replaced the javap recipe and works
+  for any version without the game installed:
   ```
-  "C:/Program Files/Java/jdk-21.0.11/bin/javap.exe" -p -s -classpath \
-    "C:/Users/caves/AppData/Roaming/PrismLauncher/instances/1.21.11/minecraft/.fabric/remappedJars/minecraft-1.21.11-0.19.3/client-intermediary.jar" \
-    net.minecraft.class_XXXX | grep -A 2 method_XXXXX
+  python tools/find_symbol.py members 26.3 net/minecraft/client/renderer/GameRenderer --grep cam
+  python tools/find_symbol.py trace   1.21.11 net/minecraft/client/Minecraft player
+  python tools/find_symbol.py drift   swing_hand          # where it exists, across all 24
   ```
+  `trace` prints the name in all three namespaces at once; `drift` is how you find out that a
+  symbol you rely on vanished in 26.3.
+- `tools/gen_mappings.py` rebuilds `sdk/mappings/mappings_gen.inc` from the spec. Run it after
+  any spec change. It needs network on a cold cache and nothing afterwards.
+- `tools/verify_mappings.py` (build step `[0/5]`) now proves **owner and descriptor** on every
+  version in every namespace, and **fails the build**. It also proves the 1.21.11 intermediary
+  column still reproduces `tools/symbols/baseline_1.21.11.json` — the exact header the client
+  was pinned to before multi-version work. That check is what keeps this a refactor.
 - Sanity-check the validator itself occasionally by corrupting one name and confirming it
   fails. "195 names checked" proves nothing about *your* name.
+
+## Multi-version
+
+One DLL runs on 24 stable releases. The range is not uniform — it breaks in two at a place
+that has nothing to do with the game's API:
+
+- **1.20 – 1.21.11** ship obfuscated jars. Under Fabric the loader remaps them, so the live
+  names are **intermediary** (`class_310`); on a vanilla launcher they are the raw
+  **obfuscated** names (`gfj`), which are re-rolled every release.
+- **26.1 and later are not obfuscated at all.** Mojang stopped publishing `client_mappings`
+  and Fabric publishes `intermediary 0.0.0` for them, because there is nothing to map: the
+  jar carries **official** names (`net/minecraft/client/Minecraft`). Fabric is optional there.
+
+So a symbol has three possible spellings and the client has to know which one is live.
+
+**Detection** (`sdk/version/version.cpp`) runs before any lookup. It reads `version.json`
+from the classpath — a *resource*, not a class, so finding it needs no mapping — and falls
+back to scanning `java.class.path` and `sun.java.command`, because under Fabric the class
+path holds the loader rather than the game. An unrecognised id (a snapshot) is pinned to the
+nearest supported table and **logged as a guess**; `sdk::version::exact()` is false and the
+menu says so.
+
+**Namespace** is then probed by resolving the client class *and* its static singleton field
+in each candidate table. Both, because an obfuscated class name is three letters long and
+could belong to anything on the class path.
+
+**The table** (`sdk/mappings/mappings_gen.inc`, generated) is
+`[namespace][version][symbol] -> {name, signature, owner}` as string-pool indices. The owner
+travels with the symbol because members *move*: `GameRenderer.pick` became `Minecraft.pick`
+in 26.1 and `GameRenderer.getFov` became `Camera.getFov`. A hook that pairs a method constant
+with a separately chosen class constant will silently target the wrong class — ask
+`sdk::mappings::owner_of("update_crosshair_target")` instead.
+
+Everything in `sdk/mappings/mappings.hpp` is now `extern const char*`, bound once by
+`sdk::mappings::bind()` from `enhance_client::attach()`. **A symbol the running version does
+not have binds to `""`** — the same sentinel the header always used for absent symbols, so
+`if (!name[0])` guards keep working. `sdk::mappings::have(x)` spells that test.
+
+### Working on it
+
+- Coverage per version: `tools/symbols/coverage.txt` (regenerated with the tables).
+- A symbol that exists but whose **call shape changed** must not be bound. Mark it
+  `blocked_by` in `tools/symbols/overrides.json`: the discovered triple stays recorded, the
+  symbol reports absent, and the feature degrades visibly instead of calling a method with
+  the wrong arguments. Two are blocked today:
+  - `get_fov` — `GameRenderer.getFov(Camera,float,boolean)` became a no-arg `Camera.getFov()`
+    in 26.1; `sdk/render/render_view.cpp` still passes three arguments.
+  - `swing_hand` — 26.3 turned `swing(InteractionHand)` into
+    `swing(InteractionHand, SwingAnimation, boolean)Z`.
+- Per-version corrections live in `overrides.json` as `versions: [{since, until, ...}]`
+  rules, copied into the spec by the seeder. Later matching rules win.
+- `tools/symbols/mappings_pinned_1.21.11.hpp` is the pre-multi-version header, kept as the
+  seed source and as documentation of *why* each symbol was chosen. `tools/seed_symbols.py`
+  reads it, not the live header — the live one has no values any more.
+- The Java renderer is compiled `--release 17`, not 21: 1.20–1.20.4 run Java 17 and would
+  throw `UnsupportedClassVersionError`, which reads as "the renderer does nothing".
 
 ## Hooking
 
@@ -82,6 +148,28 @@ Things that cost time here:
 - **Redefinition preserves Mixin transforms.** `JNIHook_ProbeClassMixins` showed `Entity` and
   `GameRenderer` keep their Fabric/Sodium handlers after redefinition. The old blanket refusal
   to touch Mixin-instrumented classes was over-cautious and is gone.
+- **The renamed copy does not always verify, and the failure is not about your method.**
+  To let a hook call the original body, JNIHook defines a copy of the class under a new name.
+  That makes `this` a type no other class knows, so any method that hands `this` to code
+  expecting the real class fails verification — and one such method sinks the whole copy:
+
+  ```
+  VerifyError: Bad type on operand stack
+    Location: Player_<uuid>.<init>(Level, GameProfile)V @128: invokespecial
+    Reason:   Type 'Player_<uuid>' is not assignable to 'Player'
+  ```
+
+  Seen on 26.2 from a Fabric API Mixin handler inside `Player` and on 26.3 from `Player`'s
+  own constructor. Attach now catches this, stubs out the method the verifier named (native,
+  no body), rebuilds the copy and retries — the accumulated stubs live in `g_forced_stubs`.
+  Stubbing *everything* except the hooked method would be simpler and wrong: a hooked method
+  that calls a private sibling needs that sibling's body.
+- **Verification is lazy, so `DefineClass` succeeding means nothing.** A broken copy defines
+  fine and only throws when the class is linked — which happened at the `GetMethodID` that
+  fetches the original method, long after the copy was cached. Attach forces the link itself,
+  while the copy can still be rebuilt.
+- **A failed attach used to say only `failed=8`.** `JNIHook_LastErrorDetail()` now carries the
+  Java exception's `toString()`, which is what turned the above from a guess into a fix.
 - Attach from the **client thread**, not the worker (`enhance::client_thread::post`).
 
 **Always check the log for the `hook attached` lines after injecting.** A failed attach is
