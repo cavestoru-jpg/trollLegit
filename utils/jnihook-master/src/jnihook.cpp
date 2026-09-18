@@ -22,6 +22,7 @@
 
 #include <jnihook.h>
 #include <unordered_map>
+#include <set>
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -49,6 +50,130 @@ static std::unique_ptr<jnihook_t> g_jnihook = nullptr;
 // Last JVMTI error behind a JNIHOOK_ERR_JVMTI_OPERATION result. Diagnostic
 // only; read through JNIHook_LastJvmtiError().
 static jvmtiError g_last_jvmti_error = JVMTI_ERROR_NONE;
+
+// Words for the last failure. A result code says which step failed but not why,
+// and the Java exception that explains it is cleared before the caller can look
+// at it. Read through JNIHook_LastErrorDetail().
+static std::string g_last_error_detail;
+
+// Records the pending Java exception (class name and message) and clears it.
+static void record_exception(JNIEnv *env, const char *what)
+{
+        g_last_error_detail = what ? what : "";
+
+        jthrowable ex = env->ExceptionOccurred();
+        if (!ex) {
+                return;
+        }
+        env->ExceptionClear();
+
+        jclass throwable_class = env->GetObjectClass(ex);
+        jmethodID to_string = throwable_class
+                ? env->GetMethodID(throwable_class, "toString", "()Ljava/lang/String;")
+                : nullptr;
+        if (to_string) {
+                jstring text = reinterpret_cast<jstring>(env->CallObjectMethod(ex, to_string));
+                if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                } else if (text) {
+                        const char *chars = env->GetStringUTFChars(text, nullptr);
+                        if (chars) {
+                                g_last_error_detail += ": ";
+                                g_last_error_detail += chars;
+                                env->ReleaseStringUTFChars(text, chars);
+                        }
+                        env->DeleteLocalRef(text);
+                }
+        }
+        if (throwable_class) {
+                env->DeleteLocalRef(throwable_class);
+        }
+        env->DeleteLocalRef(ex);
+}
+
+// Pulls "<name><descriptor>" out of a VerifyError's Location line:
+//
+//   Location:
+//     net/minecraft/.../Player_<uuid>.<init>(Lnet/.../Level;L...;)V @128: invokespecial
+//
+// Returns false when the message does not carry one, which is the signal to stop
+// trying rather than to guess.
+static bool parse_verify_error_method(const std::string &detail,
+                                      const std::string &copy_class_name,
+                                      std::string &name_out,
+                                      std::string &descriptor_out)
+{
+        const std::string needle = copy_class_name + ".";
+        size_t at = detail.find(needle);
+        if (at == std::string::npos)
+                return false;
+
+        at += needle.size();
+        size_t end = detail.find(" @", at);
+        if (end == std::string::npos) {
+                end = detail.find('\n', at);
+        }
+        if (end == std::string::npos || end <= at)
+                return false;
+
+        const std::string signature = detail.substr(at, end - at);
+        const size_t paren = signature.find('(');
+        if (paren == std::string::npos)
+                return false;
+
+        name_out = signature.substr(0, paren);
+        descriptor_out = signature.substr(paren);
+        return !name_out.empty() && descriptor_out.size() > 1;
+}
+
+// Makes one method of the copy native and drops its body, so the verifier has
+// nothing to check there.
+//
+// The copy exists for exactly one purpose: to hold the ORIGINAL body of the
+// method being hooked, so the hook can still call it. Every other method in it is
+// dead weight -- and dead weight that can refuse to verify. Renaming the class
+// makes `this` a type no other class knows, so any method that hands `this` to
+// code expecting the real class (a constructor calling a helper, a Mixin handler
+// calling a Fabric callback) fails verification and takes the whole copy with it.
+//
+// Rather than stub every method up front -- which would break a hooked method that
+// calls a private sibling -- the verifier is allowed to name its own casualties.
+static bool stub_method_body(ClassFile &cf, const std::string &name,
+                             const std::string &descriptor)
+{
+        // A reference: get_methods() hands back the vector itself, and a copy would
+        // drop the stub on the floor.
+        auto &methods = cf.get_methods();
+        for (auto &method : methods) {
+                auto name_ci = reinterpret_cast<CONSTANT_Utf8_info *>(
+                        cf.get_constant_pool_item(method.name_index).bytes.data());
+                auto desc_ci = reinterpret_cast<CONSTANT_Utf8_info *>(
+                        cf.get_constant_pool_item(method.descriptor_index).bytes.data());
+
+                const std::string method_name(name_ci->bytes, &name_ci->bytes[name_ci->length]);
+                const std::string method_desc(desc_ci->bytes, &desc_ci->bytes[desc_ci->length]);
+
+                if (method_name != name || method_desc != descriptor)
+                        continue;
+                if ((method.access_flags & ACC_NATIVE) == ACC_NATIVE)
+                        return false;           // already stubbed; retrying would loop
+
+                method.access_flags |= ACC_NATIVE;
+                for (size_t i = 0; i < method.attributes.size(); ++i) {
+                        auto attr_name_ci = reinterpret_cast<CONSTANT_Utf8_info *>(
+                                cf.get_constant_pool_item(
+                                        method.attributes[i].attribute_name_index).bytes.data());
+                        const std::string attr_name(attr_name_ci->bytes,
+                                                    &attr_name_ci->bytes[attr_name_ci->length]);
+                        if (attr_name == "Code") {
+                                method.attributes.erase(method.attributes.begin() + i);
+                                break;
+                        }
+                }
+                return true;
+        }
+        return false;
+}
 
 // Which capability set Init actually managed to acquire, and whether it
 // includes can_suspend. Attach must not try to suspend threads without it --
@@ -80,6 +205,12 @@ static bool        g_probe_seen    = false;
 static bool        g_probe_mixins  = false;
 static std::string g_probe_sample;
 static int         g_probe_size    = 0;
+
+// Methods the verifier refused to accept in a renamed copy, per class. Rebuilt
+// into every subsequent copy of that class as a native stub with no body. Grows
+// only when a definition or a link actually fails, so a class that verifies
+// cleanly never gets one.
+static std::unordered_map<std::string, std::set<std::pair<std::string, std::string>>> g_forced_stubs;
 
 static std::unordered_map<std::string, std::vector<hook_info_t>> g_hooks;
 static std::unordered_map<std::string, std::unique_ptr<ClassFile>> g_class_file_cache;
@@ -547,6 +678,12 @@ JNIHook_Attach(jmethodID method, void *native_hook_method, jmethodID *original_m
                 jclass class_copy;
                 auto cf = *g_class_file_cache[clazz_name];
 
+                // Whatever the verifier rejected in an earlier attempt at this
+                // class goes back in as a bodiless native method.
+                for (const auto &stub : g_forced_stubs[clazz_name]) {
+                        stub_method_body(cf, stub.first, stub.second);
+                }
+
                 // Patch source file name (Java will refuse to define the class otherwise)
                 for (auto &attr : cf.get_attributes()) {
                         auto attr_name_ci = reinterpret_cast<CONSTANT_Utf8_info *>(
@@ -617,7 +754,7 @@ JNIHook_Attach(jmethodID method, void *native_hook_method, jmethodID *original_m
                 // Type 'OrigClass' (current frame, stack[0]) is not assignable to 'OrigClass_<UUID>'
                 auto constant_pool = cf.get_constant_pool();
                 for (auto &item : constant_pool) {
-                        if (item.bytes[0] != CONSTANT_NameAndType)
+                        if (item.bytes.empty() || item.bytes[0] != CONSTANT_NameAndType)
                                 continue;
 
                         auto nt_ci = reinterpret_cast<CONSTANT_NameAndType_info *>(item.bytes.data());
@@ -679,17 +816,72 @@ JNIHook_Attach(jmethodID method, void *native_hook_method, jmethodID *original_m
                         }
                 }
 
-                auto class_data = cf.bytes();
-
                 if (g_jnihook->jvmti->GetClassLoader(clazz, &class_loader) != JVMTI_ERROR_NONE)
                         return JNIHOOK_ERR_JVMTI_OPERATION;
 
+                // Renaming the class breaks any method that hands `this` to code
+                // expecting the real type -- a constructor calling a helper, a Mixin
+                // handler calling a Fabric callback -- and one such method sinks the
+                // whole copy even though nothing here will ever call it.
+                //
+                // The verifier names its own casualties, so each one is remembered,
+                // stubbed out, and the copy rebuilt. Rebuilt rather than patched:
+                // verification is lazy, so a bad method can pass DefineClass and only
+                // surface when the class is linked, and a class that failed to link
+                // cannot be defined again under the same name.
+                //
+                // Stubbing everything up front would be simpler and wrong: a hooked
+                // method that calls a private sibling needs that sibling's body.
+                auto retry_without = [&](const std::string &what) -> jnihook_result_t {
+                        record_exception(env, what.c_str());
+
+                        std::string bad_name, bad_descriptor;
+                        if (!parse_verify_error_method(g_last_error_detail, class_copy_name,
+                                                       bad_name, bad_descriptor)) {
+                                return JNIHOOK_ERR_JNI_OPERATION;
+                        }
+
+                        if (bad_name == method_info->name &&
+                            bad_descriptor == method_info->signature) {
+                                g_last_error_detail = "the hooked method itself does not verify in a "
+                                                      "renamed copy: " + g_last_error_detail;
+                                return JNIHOOK_ERR_JNI_OPERATION;
+                        }
+
+                        auto &stubs = g_forced_stubs[clazz_name];
+                        if (stubs.size() > 64 ||
+                            !stubs.insert({ bad_name, bad_descriptor }).second) {
+                                // Already stubbed, so this attempt made no progress.
+                                return JNIHOOK_ERR_JNI_OPERATION;
+                        }
+
+                        g_original_classes.erase(clazz_name);
+                        return JNIHook_Attach(method, native_hook_method, original_method);
+                };
+
+                auto class_data = cf.bytes();
                 class_copy = env->DefineClass(NULL, class_loader,
                                               reinterpret_cast<const jbyte *>(class_data.data()),
                                               class_data.size());
 
-                if (!class_copy)
-                        return JNIHOOK_ERR_JNI_OPERATION;
+                if (!class_copy) {
+                        return retry_without("DefineClass of the renamed copy of " + clazz_name +
+                                             " failed");
+                }
+
+                // Force linking now, while the copy can still be rebuilt. Left to
+                // happen on its own it would surface at the GetMethodID below, by
+                // which point this class is cached and every later attach on it
+                // fails the same way.
+                const bool is_static = (method_info->access_flags & ACC_STATIC) == ACC_STATIC;
+                jmethodID probe = is_static
+                        ? env->GetStaticMethodID(class_copy, method_info->name.c_str(),
+                                                 method_info->signature.c_str())
+                        : env->GetMethodID(class_copy, method_info->name.c_str(),
+                                           method_info->signature.c_str());
+                if (!probe || env->ExceptionCheck()) {
+                        return retry_without("linking the renamed copy of " + clazz_name + " failed");
+                }
 
                 g_original_classes[clazz_name] = class_copy;
         }
@@ -713,7 +905,8 @@ JNIHook_Attach(jmethodID method, void *native_hook_method, jmethodID *original_m
                 }
 
                 if (!orig || env->ExceptionOccurred()) {
-                        env->ExceptionClear();
+                        record_exception(env, ("the copy of " + clazz_name +
+                                               " has no " + method_info->name + method_info->signature).c_str());
                         return JNIHOOK_ERR_JAVA_EXCEPTION;
                 }
 
@@ -984,6 +1177,12 @@ JNIHOOK_API const char * JNIHOOK_CALL
 JNIHook_AcquiredCapabilities(void)
 {
         return g_caps_acquired;
+}
+
+JNIHOOK_API const char * JNIHOOK_CALL
+JNIHook_LastErrorDetail(void)
+{
+        return g_last_error_detail.c_str();
 }
 
 JNIHOOK_API void JNIHOOK_CALL

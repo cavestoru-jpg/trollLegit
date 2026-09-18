@@ -97,6 +97,19 @@ JNIHOOK_API const char * JNIHOOK_CALL
 JNIHook_AcquiredCapabilities(void);
 
 /**
+ * Describes the most recent failure in words: the Java exception's class and
+ * message when one was thrown, or the step that failed. Empty when the last
+ * attach succeeded.
+ *
+ * A result code alone does not identify the failure -- JNIHOOK_ERR_JAVA_EXCEPTION
+ * is returned from several steps, and the exception that caused it is cleared
+ * before the caller ever sees it. Without this, a failing attach on one Minecraft
+ * version and a failing attach on another look identical.
+ */
+JNIHOOK_API const char * JNIHOOK_CALL
+JNIHook_LastErrorDetail(void);
+
+/**
  * Marks the CALLING thread as Minecraft's tick/render thread.
  *
  * Attaching normally needs can_suspend, because between RedefineClasses and

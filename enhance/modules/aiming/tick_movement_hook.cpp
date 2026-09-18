@@ -1,6 +1,7 @@
 #include "tick_movement_hook.h"
 #include "silent_aim.h"
 #include "../killaura/sprint.h"
+#include "../killaura/silent_rotation_hook.h"
 #include "rotation.h"
 
 #include "../../enhance.h"
@@ -50,6 +51,13 @@ static jfieldID g_fid_last_pitch    = nullptr;
 // tick wrap and nothing puts it back -- so the raycast wrap sets it explicitly
 // rather than depending on that leftover.
 static jfieldID g_fid_head_yaw      = nullptr;
+
+// ClientPlayerEntity.renderYaw / renderPitch — what the first-person hand is
+// drawn from. Corrected in the restore so the held item/arm does not follow the
+// silent aim in first person. Optional: a missing field just leaves the old
+// (leaking) behaviour for that axis.
+static jfieldID g_fid_render_yaw    = nullptr;
+static jfieldID g_fid_render_pitch  = nullptr;
 
 // Set only between the swap and the restore, read by silent_rotation_hook.
 // Single-threaded in practice (the tick thread), atomic because the reader is
@@ -418,7 +426,8 @@ static void hkUpdateRenderState(JNIEnv* env, jobject thiz, jobject entity, jobje
 	// thousands of calls a second, and the hook stays installed whether or not
 	// the feature is switched on. Reading two bools costs nothing; looking the
 	// local player up through JNI to then discard it does not.
-	if ((globals::silent_aim_enabled || globals::silent_rotation_enabled) &&
+	if ((globals::silent_aim_enabled || globals::silent_rotation_enabled ||
+	     globals::killaura_enabled) &&
 	    entity && g_mid_get_pitch && g_mid_set_pitch)
 	{
 		jobject me = fetch_local_player(env);
@@ -570,6 +579,24 @@ static void hkTick(JNIEnv* env, jobject thiz)
 		}
 	}
 
+	// Fire the queued attack HERE -- BEFORE ClientPlayerEntity.tick() runs, and
+	// therefore before sendMovementPackets sends this tick's flying packet.
+	//
+	// Vanilla sends the attack (InteractEntity) and swing (Animation) from
+	// handleInputEvents, which is BEFORE the flying packet. Sending them AFTER,
+	// as the old drain did (right after sendMovementPackets), is exactly the
+	// out-of-order shape Grim's Post / PacketOrder checks flag. Firing before
+	// tick() puts them ahead of the flying packet, matching vanilla's
+	// Attack -> Swing -> Move order on the wire.
+	//
+	// The hit still lands: the server validates it against the rotation from the
+	// PREVIOUS flying packet, which already carried the fake angle because
+	// killaura rotates every tick it holds a target. And this needs only the
+	// tick hook, which is always attached -- it does not depend on
+	// silent_rotation_hook's own sendMovementPackets redefinition being in place.
+	if (thiz)
+		enhance::modules::silent_rotation_hook::fire_pending_attack(env, thiz);
+
 	// The whole of ClientPlayerEntity.tick runs with the fake yaw in place.
 	// That is the point: sendMovementPackets is inside it and builds the look
 	// packet from getYaw(), so the server is told the fake angle, and travel()
@@ -636,15 +663,47 @@ static void hkTick(JNIEnv* env, jobject thiz)
 			}
 		}
 
+		// renderYaw / renderPitch drive the FIRST-PERSON hand: HeldItemRenderer
+		// lerps lastRender* -> render* and rotates the held item and arm by the
+		// difference against the real view. ClientPlayerEntity.tickMovementInput
+		// drags them 50% toward getYaw()/getPitch() each tick, which was the FAKE
+		// value across tick(), so without this the hand visibly turns with the
+		// silent aim in first person. The field moved exactly half the offset, so
+		// take half back -- that lands renderYaw where it would be had the tick
+		// run on the real angles, which keeps the natural turn-sway and removes
+		// only the silent offset. lastRender* is the pre-drag copy of renderYaw
+		// (already clean, corrected last tick), so it is left alone.
+		if (g_fid_render_yaw)
+		{
+			const float r = env->GetFloatField(player, g_fid_render_yaw);
+			if (env->ExceptionCheck()) env->ExceptionClear();
+			else
+			{
+				env->SetFloatField(player, g_fid_render_yaw, r - dyaw * 0.5f);
+				if (env->ExceptionCheck()) env->ExceptionClear();
+			}
+		}
+		if (dpitch != 0.0f && g_fid_render_pitch)
+		{
+			const float r = env->GetFloatField(player, g_fid_render_pitch);
+			if (env->ExceptionCheck()) env->ExceptionClear();
+			else
+			{
+				env->SetFloatField(player, g_fid_render_pitch, r - dpitch * 0.5f);
+				if (env->ExceptionCheck()) env->ExceptionClear();
+			}
+		}
+
 		// Deliberately NOT restored, and this is the part to revisit as the
 		// feature grows rather than to "fix" blindly:
 		//
-		//   headYaw / bodyYaw / renderYaw and their previous-tick copies
-		//     these drive the player MODEL and the first-person hand, not the
-		//     view. Each absorbs a different share of the offset -- headYaw all
-		//     of it, renderYaw half, bodyYaw an eased and then nonlinearly
-		//     clamped fraction -- so a blanket subtraction is wrong, and
-		//     subtracting the full offset from bodyYaw made it spin.
+		//   headYaw / bodyYaw and their previous-tick copies
+		//     these aim the THIRD-PERSON model at the target, which is wanted,
+		//     and they do NOT feed the first-person hand (that is renderYaw,
+		//     corrected above). Each absorbs a different share of the offset --
+		//     headYaw all of it, bodyYaw an eased and then nonlinearly clamped
+		//     fraction -- so a blanket subtraction is wrong, and subtracting the
+		//     full offset from bodyYaw made it spin.
 		//
 		//   ClientPlayerEntity.lastYawClient / lastPitchClient
 		//     these MUST keep the fake value. sendMovementPackets compares
@@ -790,6 +849,16 @@ bool enhance::modules::aiming::tick_movement_hook::init()
 		env->DeleteLocalRef(entity_cls);
 	}
 
+	// renderYaw / renderPitch live on ClientPlayerEntity itself (cp_cls), not on
+	// Entity/LivingEntity. Optional: if unresolved the first-person hand keeps
+	// following the silent aim for that axis, but nothing crashes.
+	g_fid_render_yaw = env->GetFieldID(cp_cls,
+		sdk::mappings::render_yaw_name, sdk::mappings::render_yaw_sig);
+	if (env->ExceptionCheck()) { env->ExceptionClear(); g_fid_render_yaw = nullptr; }
+	g_fid_render_pitch = env->GetFieldID(cp_cls,
+		sdk::mappings::render_pitch_name, sdk::mappings::render_pitch_sig);
+	if (env->ExceptionCheck()) { env->ExceptionClear(); g_fid_render_pitch = nullptr; }
+
 	// Without the accessors the hook could only call through, so there would
 	// be nothing to gain and a redefinition to undo.
 	if (!g_mid_get_yaw || !g_mid_set_yaw)
@@ -836,13 +905,30 @@ bool enhance::modules::aiming::tick_movement_hook::init()
 			env->DeleteLocalRef(mc_cls);
 		}
 
-		jclass gr_cls = sdk::classloader::find_class(env, sdk::mappings::gamerenderer_class_sig);
+		// The raycast moved off GameRenderer onto Minecraft in 26.1, so the class
+		// comes from the symbol table rather than from a separately chosen class
+		// constant -- pairing the two by hand is how this hook silently attached
+		// to nothing on 26.x while every other hook in this file worked.
+		const char* ch_owner = sdk::mappings::owner_of("update_crosshair_target");
+		if (!sdk::mappings::have(ch_owner))
+			ch_owner = sdk::mappings::gamerenderer_class_sig;
+
+		jclass gr_cls = sdk::classloader::find_class(env, ch_owner);
+		if (!gr_cls)
+			logger::log_error(std::string("[silent] crosshair hook: class not found: ") + ch_owner);
+
 		if (gr_cls && g_mc_class_ref && g_fid_mc_instance && g_fid_mc_player)
 		{
 			jmethodID ch_mid = env->GetMethodID(gr_cls,
 				sdk::mappings::update_crosshair_target_name,
 				sdk::mappings::update_crosshair_target_sig);
 			if (env->ExceptionCheck()) { env->ExceptionClear(); ch_mid = nullptr; }
+
+			if (!ch_mid)
+				logger::log_error(std::string("[silent] crosshair hook: method not found: ") +
+					ch_owner + "." + sdk::mappings::update_crosshair_target_name +
+					sdk::mappings::update_crosshair_target_sig +
+					" -- clicks will use the real angle");
 
 			if (ch_mid)
 			{
@@ -868,12 +954,24 @@ bool enhance::modules::aiming::tick_movement_hook::init()
 
 		// Third hook: the right-click use, for the packet that carries its own
 		// angles. Independent of the other two in the same way.
-		jclass im_cls = sdk::classloader::find_class(env, "net/minecraft/class_636");   // ClientPlayerInteractionManager; no mapping constant exists, same literal silent_rotation_hook uses
+		// MultiPlayerGameMode. The literal "net/minecraft/class_636" that used to be
+		// here is an intermediary name, and 26.x has no intermediary names at all.
+		const char* im_owner = sdk::mappings::owner_of("interact_item");
+		jclass im_cls = sdk::mappings::have(im_owner)
+			? sdk::classloader::find_class(env, im_owner) : nullptr;
+		if (!im_cls)
+			logger::log_error(std::string("[silent] item-use hook: class not found: ") +
+				(sdk::mappings::have(im_owner) ? im_owner : "<interact_item unresolved>"));
+
 		if (im_cls)
 		{
 			jmethodID ii_mid = env->GetMethodID(im_cls,
 				sdk::mappings::interact_item_name, sdk::mappings::interact_item_sig);
 			if (env->ExceptionCheck()) { env->ExceptionClear(); ii_mid = nullptr; }
+
+			if (!ii_mid)
+				logger::log_error(std::string("[silent] item-use hook: method not found: ") +
+					im_owner + "." + sdk::mappings::interact_item_name);
 
 			if (ii_mid)
 			{

@@ -65,13 +65,29 @@ void enhance::modules::reach::run()
 		// and the attempt is not free -- unthrottled it queued one attach per
 		// pass and filled the log with the same failure a hundred times a
 		// second.
+		// And given up on after a few tries. An attach that fails because the
+		// method cannot be hooked on this version fails the same way forever, and
+		// every retry is a class redefinition -- on 26.2 this printed the same
+		// error every two seconds for the whole session.
+		static constexpr int k_max_attempts = 5;
 		static ULONGLONG s_next_try = 0;
+		static int s_attempts = 0;
+
 		const ULONGLONG now = GetTickCount64();
-		if (now >= s_next_try)
+		if (s_attempts < k_max_attempts && now >= s_next_try)
 		{
 			s_next_try = now + 2000;
-			enhance::client_thread::post([]() {
-				try { hook_initialized = reach_hook::init(); } catch (...) {}
+			++s_attempts;
+			const bool last = (s_attempts == k_max_attempts);
+			enhance::client_thread::post([last]() {
+				try
+				{
+					hook_initialized = reach_hook::init();
+					if (!hook_initialized && last)
+						logger::log_error(std::string("[reach] giving up after 5 attempts: ") +
+							reach_hook::unavailable_reason());
+				}
+				catch (...) {}
 			});
 		}
 	}

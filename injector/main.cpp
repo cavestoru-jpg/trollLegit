@@ -126,7 +126,32 @@ DWORD GetProcessIDByName(const char* processName) {
     return 0;
 }
 
-int main() {
+// Counts the javaw.exe processes currently running. With one Minecraft open the
+// first match is the right one; multi-version work means several are open at once
+// and picking the first is a coin toss.
+int CountProcessesByName(const char* processName) {
+    PROCESSENTRY32 pe32;
+    pe32.dwSize = sizeof(PROCESSENTRY32);
+
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+
+    int count = 0;
+    if (Process32First(hSnap, &pe32)) {
+        do {
+            if (strcmp(pe32.szExeFile, processName) == 0) {
+                ++count;
+            }
+        } while (Process32Next(hSnap, &pe32));
+    }
+
+    CloseHandle(hSnap);
+    return count;
+}
+
+int main(int argc, char** argv) {
     // Show console window
     AllocConsole();
     FILE* pCout;
@@ -226,7 +251,33 @@ int main() {
     SetConsoleColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
     Sleep(500);
 
-    DWORD m_pid = GetProcessIDByName("javaw.exe");
+    // An explicit pid wins: `injector.exe 14316`. Several Minecraft versions are
+    // routinely open side by side now, and injecting into whichever one the
+    // process snapshot happens to list first wastes a whole test run -- the DLL
+    // reports the version it landed in, which is not necessarily the one being
+    // tested.
+    DWORD m_pid = 0;
+    if (argc > 1) {
+        m_pid = static_cast<DWORD>(strtoul(argv[1], nullptr, 10));
+        if (m_pid == 0) {
+            SetConsoleColor(FOREGROUND_RED | FOREGROUND_INTENSITY);
+            WriteLine("usage: injector.exe [pid]");
+            SetConsoleColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+            Sleep(3000);
+            return 1;
+        }
+    } else {
+        m_pid = GetProcessIDByName("javaw.exe");
+        const int running = CountProcessesByName("javaw.exe");
+        if (running > 1) {
+            SetConsoleColor(FOREGROUND_RED | FOREGROUND_INTENSITY);
+            WriteLine("warning: " + std::to_string(running) +
+                      " minecraft processes are running; injecting into the first one. "
+                      "pass a pid to choose.");
+            SetConsoleColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+        }
+    }
+
     if (!m_pid || m_pid == 0) {
         DeleteFileA(dllPath.c_str());
         SetConsoleColor(FOREGROUND_RED | FOREGROUND_INTENSITY);

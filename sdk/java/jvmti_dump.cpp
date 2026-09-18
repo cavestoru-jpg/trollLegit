@@ -36,6 +36,14 @@ void sdk::java::dump_class_methods(JNIEnv* env, const char* class_sig)
 		return;
 	}
 
+	// A symbol the running version does not have binds to "". Dumping it would
+	// report a class-not-found for the empty string, once per entry, which is how
+	// this diagnostic turned into eleven error lines per injection on 26.x.
+	if (!class_sig[0])
+	{
+		return;
+	}
+
 	jclass klass = sdk::classloader::find_class(env, class_sig);
 	if (!klass)
 	{
@@ -79,7 +87,7 @@ void sdk::java::dump_class_methods(JNIEnv* env, const char* class_sig)
 void sdk::java::dump_class_fields(JNIEnv* env, const char* class_sig)
 {
 	jvmtiEnv* jvmti = sdk::java::jvmti();
-	if (!jvmti || !env || !class_sig)
+	if (!jvmti || !env || !class_sig || !class_sig[0])
 		return;
 
 	jclass klass = sdk::classloader::find_class(env, class_sig);
@@ -235,18 +243,18 @@ void sdk::java::dump_render_mappings(JNIEnv* env)
 	// subscribes to Fabric's WorldRenderEvents instead of hooking anything),
 	// but still the classes whose Mixin state says which mods own the render
 	// path on this install.
-	dump_class_methods(env, "net/minecraft/class_761");
-	dump_class_methods(env, "net/minecraft/class_757");
+	dump_class_methods(env, sdk::mappings::world_renderer_class_sig);
+	dump_class_methods(env, sdk::mappings::gamerenderer_class_sig);
 	// Entity — lastRenderX/Y/Z for per-frame interpolation.
-	dump_class_fields(env, "net/minecraft/class_1297");
+	dump_class_fields(env, sdk::mappings::entity_class_sig);
 	// MinecraftClient — holds the RenderTickCounter.
-	dump_class_fields(env, "net/minecraft/class_310");
+	dump_class_fields(env, sdk::mappings::minecraftclass_sig);
 	// RenderTickCounter — the tick-progress getter is picked by signature, so
 	// its method list is the only way to confirm the pick is unambiguous.
-	dump_class_methods(env, "net/minecraft/class_9779");
+	dump_class_methods(env, sdk::mappings::render_tick_counter_class_sig);
 	// Camera — confirms the yaw/pitch/pos accessors the projection relies on.
-	dump_class_methods(env, "net/minecraft/class_4184");
-	dump_class_fields(env, "net/minecraft/class_4184");
+	dump_class_methods(env, sdk::mappings::camera_class_sig);
+	dump_class_fields(env, sdk::mappings::camera_class_sig);
 
 	// ---- Name tags -------------------------------------------------------
 	// The scoreboard and team classes are not mapped anywhere yet, and their
@@ -254,14 +262,14 @@ void sdk::java::dump_render_mappings(JNIEnv* env)
 	// return type instead: World.getScoreboard() names the Scoreboard class,
 	// and Scoreboard's own methods then name the Team class. Dumping the
 	// classes we DO know lets those be read off rather than invented.
-	dump_class_methods(env, "net/minecraft/class_1937");   // World -> getScoreboard
-	dump_class_methods(env, "net/minecraft/class_1657");   // PlayerEntity -> name, hands, id
-	dump_class_methods(env, "net/minecraft/class_1309");   // LivingEntity -> health, absorption, equipment
+	dump_class_methods(env, sdk::mappings::world_class_sig);        // World -> getScoreboard
+	dump_class_methods(env, sdk::mappings::player_entity_class_sig); // PlayerEntity -> name, hands, id
+	dump_class_methods(env, sdk::mappings::living_entity_class_sig); // LivingEntity -> health, absorption, equipment
 	// World.method_8428() returned class_269, so that is Scoreboard. Its own
 	// methods name the Team class and the add/remove/lookup calls the vanilla
 	// name-tag hiding needs.
-	dump_class_methods(env, "net/minecraft/class_269");    // Scoreboard
-	dump_class_methods(env, "net/minecraft/class_1297");   // Entity -> getTeam, scoreboard name
+	dump_class_methods(env, sdk::mappings::scoreboard_class_sig);   // Scoreboard
+	dump_class_methods(env, sdk::mappings::entity_class_sig);       // Entity -> getTeam, scoreboard name
 
 	logger::log("[jvmti] ################ end of dump ################");
 }

@@ -13,6 +13,7 @@ static bool      g_detached_cleanly = true;
 static jmethodID ORIG_getEntityInteractionRange = nullptr;
 static jclass g_player_entity_class = nullptr;
 static double g_reach_override = -1.0;
+static std::string g_unavailable_reason;
 
 jdouble hkGetEntityInteractionRange(JNIEnv *env, jobject thiz)
 {
@@ -99,6 +100,21 @@ bool enhance::modules::reach_hook::init()
 		                  " jvmti_err=" + std::to_string(JNIHook_LastJvmtiError()) +
 		                  " caps=" + JNIHook_AcquiredCapabilities();
 
+		// The result code names the step; this names the cause. Without it a
+		// failure on one Minecraft version is indistinguishable from a failure on
+		// another, which is exactly the position this hook was in on 26.2.
+		const char* detail = JNIHook_LastErrorDetail();
+		if (detail && detail[0])
+		{
+			msg += " -- ";
+			msg += detail;
+			g_unavailable_reason = detail;
+		}
+		else
+		{
+			g_unavailable_reason = "JNIHook error " + std::to_string((int)result);
+		}
+
 		jvmtiEnv* jvmti = sdk::java::jvmti();
 		if (jvmti)
 		{
@@ -184,4 +200,9 @@ void enhance::modules::reach_hook::set_reach(double distance)
 bool enhance::modules::reach_hook::detached_cleanly()
 {
 	return g_detached_cleanly;
+}
+
+const char* enhance::modules::reach_hook::unavailable_reason()
+{
+	return g_unavailable_reason.c_str();
 }
