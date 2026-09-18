@@ -26,8 +26,11 @@ namespace sdk
 			const requirement k_requirements[] = {
 				{ feature::model_pitch,   { "update_render_state", nullptr },
 				  "the render-state hook that carries the model's pitch (1.21.2+)" },
+				// Not a deficiency: the server did not send a rotation-only
+				// teleport before 1.21.2, so there is no echo to intercept. The
+				// position-look hook already covers what those versions do send.
 				{ feature::rotation_echo, { "on_player_rotation", nullptr },
-				  "the rotation packet the server asks the client to echo (1.21.2+)" },
+				  "a rotation-only teleport packet, which the server only sends from 1.21.2 on" },
 				{ feature::riptide,       { "trident_on_stopped_using", nullptr },
 				  "TridentItem.onStoppedUsing in a shape this client can hook" },
 				{ feature::reach,         { "get_entity_interaction_range", nullptr },
