@@ -4,6 +4,7 @@
 #include "../../enhance.h"
 #include "../../globals/globals.h"
 #include "../../utils/logger.h"
+#include <sdk/caps/caps.h>
 #include <sdk/minecraft/minecraft.h>
 #include <windows.h>
 #include <sstream>
@@ -72,6 +73,21 @@ void enhance::modules::reach::run()
 		static constexpr int k_max_attempts = 5;
 		static ULONGLONG s_next_try = 0;
 		static int s_attempts = 0;
+
+		// Versions before 1.20.5 have no interaction-range attribute to override,
+		// so there is nothing to hook. Asking five times and reporting an empty
+		// reason is worse than saying so once; the menu greys the control out with
+		// the same answer.
+		if (!sdk::caps::available(sdk::caps::feature::reach))
+		{
+			if (s_attempts == 0)
+			{
+				s_attempts = k_max_attempts;
+				logger::log(std::string("[reach] not available: ") +
+					sdk::caps::why_not(sdk::caps::feature::reach));
+			}
+			return;
+		}
 
 		const ULONGLONG now = GetTickCount64();
 		if (s_attempts < k_max_attempts && now >= s_next_try)
