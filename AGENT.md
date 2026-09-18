@@ -110,6 +110,22 @@ Everything in `sdk/mappings/mappings.hpp` is now `extern const char*`, bound onc
 not have binds to `""`** — the same sentinel the header always used for absent symbols, so
 `if (!name[0])` guards keep working. `sdk::mappings::have(x)` spells that test.
 
+**Verified on real games**, one per namespace and per JVM:
+
+| instance | namespace | Java | symbols | note |
+|---|---|---|---|---|
+| 1.20.4 Fabric | intermediary | 17 | 192/208 | oldest tested; riptide uses the void-returning shape |
+| 1.21.4 Fabric | intermediary | 21 | 198/208 | |
+| 1.21.4 vanilla | **obfuscated** | 21 | 198/208 | no loader at all: `find_class` falls through to `FindClass` |
+| 1.21.11 Fabric | intermediary | 21 | 204/208 | the version the client used to be pinned to |
+| 26.2 Fabric | **official** | 25 | 201/208 | all ten hooks attach |
+| 26.3 Fabric | official | 25 | 203/208 | |
+
+The vanilla instance is `PrismLauncher/instances/vanilla-1.21.4` -- a copy of the
+Fabric one with the loader and intermediary components removed. Prism only
+rescans instances at startup, so a hand-made folder needs the launcher
+restarted before `--launch <id>` can find it.
+
 ### Working on it
 
 - Coverage per version: `tools/symbols/coverage.txt` (regenerated with the tables).
