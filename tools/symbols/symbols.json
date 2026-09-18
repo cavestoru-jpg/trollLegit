@@ -453,8 +453,7 @@
         {
           "until": "1.21.1",
           "desc": "(Lnet/minecraft/world/item/ItemStack;Lnet/minecraft/world/level/Level;Lnet/minecraft/world/entity/LivingEntity;I)V",
-          "blocked_by": "found, but it returned void before 1.21.2 and boolean after. hkTridentStopped is registered as a jboolean-returning native; binding it against the void form would have the JVM read a return value that was never pushed. Unblock with a second callback for the void shape.",
-          "why": "TridentItem.onStoppedUsing gained a boolean return in 1.21.2"
+          "why": "TridentItem.onStoppedUsing gained a boolean return in 1.21.2. tick_movement_hook registers a void-returning callback for the older shape, chosen from the bound descriptor"
         }
       ]
     },

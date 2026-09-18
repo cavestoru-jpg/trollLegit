@@ -12,6 +12,7 @@
 #include <sdk/java/jvmti_dump.h>
 #include <sdk/render/render_view.h>
 #include <atomic>
+#include <cstring>
 #include <string>
 #include <windows.h>
 
@@ -373,6 +374,36 @@ static jboolean hkTridentStopped(JNIEnv* env, jobject thiz, jobject stack, jobje
 		if (env->ExceptionCheck()) env->ExceptionClear();
 	}
 	return r;
+}
+
+// The same hook for versions where onStoppedUsing returns void -- 1.21.2 gave it
+// a boolean return. A native registered with the wrong return kind does not fail
+// at attach: the JVM reads a value that was never pushed, so it has to be a
+// separate function chosen from the descriptor the symbol bound to.
+static void hkTridentStoppedVoid(JNIEnv* env, jobject thiz, jobject stack, jobject world,
+                                 jobject user, jint remaining)
+{
+	scoped_yaw_swap swap(env, user);
+	if (ORIG_trident && g_trident_class && thiz)
+	{
+		env->CallNonvirtualVoidMethod(thiz, g_trident_class, ORIG_trident,
+		                              stack, world, user, remaining);
+		if (env->ExceptionCheck()) env->ExceptionClear();
+	}
+}
+
+// Picks the callback whose return kind matches this version's descriptor.
+static void* trident_callback()
+{
+	const char* sig = sdk::mappings::trident_on_stopped_using_sig;
+	if (!sdk::mappings::have(sig))
+		return nullptr;
+	const char returns = sig[strlen(sig) - 1];
+	if (returns == 'Z')
+		return (void*)hkTridentStopped;
+	if (returns == 'V')
+		return (void*)hkTridentStoppedVoid;
+	return nullptr;
 }
 
 // AbstractHorseEntity.getControlledRotation -- a ridden mount copies the
@@ -1031,7 +1062,7 @@ bool enhance::modules::aiming::tick_movement_hook::init()
 			  sdk::mappings::on_entity_position_sig, (void*)hkOnEntityPosition,
 			  &ORIG_on_ent_pos, &g_mid_on_ent_pos, &g_net_class, "net: vehicle teleport" },
 			{ sdk::mappings::trident_item_class_sig, sdk::mappings::trident_on_stopped_using_name,
-			  sdk::mappings::trident_on_stopped_using_sig, (void*)hkTridentStopped,
+			  sdk::mappings::trident_on_stopped_using_sig, trident_callback(),
 			  &ORIG_trident, &g_mid_trident, &g_trident_class, "riptide" },
 			{ sdk::mappings::horse_class_sig, sdk::mappings::controlled_rotation_name,
 			  sdk::mappings::controlled_rotation_sig, (void*)hkControlledRotation,
@@ -1043,6 +1074,26 @@ bool enhance::modules::aiming::tick_movement_hook::init()
 
 		for (const auto& h : extras)
 		{
+			// A symbol this version does not have is not a failure: the feature
+			// simply does not exist here, the menu greys it out, and an ERROR line
+			// would send the next reader looking for a bug.
+			if (!sdk::mappings::have(h.name) || !sdk::mappings::have(h.class_sig))
+			{
+				logger::log(std::string("[silent] ") + h.label +
+					": not on this Minecraft version");
+				continue;
+			}
+
+			// A null callback means this version's method has a shape none of the
+			// callbacks match -- registering a native with the wrong return kind
+			// has the JVM read a value that was never pushed.
+			if (!h.fn)
+			{
+				logger::log_error(std::string("[silent] ") + h.label +
+					": no callback matches this version's signature");
+				continue;
+			}
+
 			jclass c = sdk::classloader::find_class(env, h.class_sig);
 			if (!c)
 			{
