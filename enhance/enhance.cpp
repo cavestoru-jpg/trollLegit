@@ -3,6 +3,7 @@
 #include <sdk/minecraft/world/world.h>
 #include <sdk/classloader.h>
 #include <sdk/version/version.h>
+#include <sdk/caps/caps.h>
 #include "enhance.h"
 #include "globals/globals.h"
 #include "hooks/Hook.h"
@@ -97,6 +98,10 @@ bool enhance::enhance_client::attach()
 		logger::log_error("[ENHANCE] mapping bind failed; the client cannot see the game");
 	}
 	printf("[ENHANCE] Minecraft: %s\n", sdk::version::describe());
+
+	// What this version cannot do, named once at startup. The menu greys those
+	// controls out, but the log line is what a bug report carries.
+	sdk::caps::log_summary();
 
 	if (Hook::init())
 	{

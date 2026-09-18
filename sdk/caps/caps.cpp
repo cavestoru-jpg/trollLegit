@@ -1,0 +1,131 @@
+#include "caps.h"
+
+#include <sdk/mappings/mappings.hpp>
+#include <sdk/version/version.h>
+#include <enhance/utils/logger.h>
+
+#include <string>
+#include <vector>
+
+namespace sdk
+{
+	namespace caps
+	{
+		namespace
+		{
+			struct requirement
+			{
+				feature     which;
+				const char* symbols[4];   // spec ids, nullptr-terminated
+				const char* human;        // what the symbol is, in words
+			};
+
+			// The symbols are spec ids from tools/symbols/symbols.json, not C++
+			// identifiers: this asks the table "does this version have it", which is
+			// the same question the binder answered at startup.
+			const requirement k_requirements[] = {
+				{ feature::model_pitch,   { "update_render_state", nullptr },
+				  "the render-state hook that carries the model's pitch (1.21.2+)" },
+				{ feature::rotation_echo, { "on_player_rotation", nullptr },
+				  "the rotation packet the server asks the client to echo (1.21.2+)" },
+				{ feature::riptide,       { "trident_on_stopped_using", nullptr },
+				  "TridentItem.onStoppedUsing in a shape this client can hook" },
+				{ feature::reach,         { "get_entity_interaction_range", nullptr },
+				  "the entity interaction range attribute (1.20.5+)" },
+				{ feature::slot_switch,   { "inventory_set_selected_slot", nullptr },
+				  "Inventory.setSelectedSlot (1.21.2+)" },
+				{ feature::storage_esp,   { "client_world_block_entities", nullptr },
+				  "the world's rendered block-entity set (1.21.9+)" },
+				{ feature::team_colours,  { "dyed_color_get_color", "dyed_color_component_class", nullptr },
+				  "the dyed-colour item component (1.20.5+)" },
+				{ feature::input_write,   { "input_forward", "input_sideways", nullptr },
+				  "writable movement input; 1.21.2 replaced it with an immutable record" },
+			};
+
+			struct resolved
+			{
+				bool        computed = false;
+				bool        available = false;
+				std::string reason;
+			};
+
+			resolved g_state[(int)feature::count];
+
+			const resolved& state_of(feature f)
+			{
+				resolved& r = g_state[(int)f];
+				if (r.computed)
+					return r;
+
+				r.computed = true;
+				r.available = true;
+
+				for (const requirement& req : k_requirements)
+				{
+					if (req.which != f)
+						continue;
+
+					for (int i = 0; i < 4 && req.symbols[i]; ++i)
+					{
+						// A symbol with no owner on this version is one the table
+						// reports absent -- the same "" the constants bind to.
+						if (sdk::mappings::have(sdk::mappings::owner_of(req.symbols[i])))
+							continue;
+
+						r.available = false;
+						r.reason = std::string("needs ") + req.human +
+						           " -- absent on " + sdk::version::name();
+						return r;
+					}
+				}
+				return r;
+			}
+		}
+
+		bool available(feature f)
+		{
+			if ((int)f < 0 || f >= feature::count)
+				return false;
+			// Before binding, nothing is known; claiming availability would put a
+			// live control in front of a client that has resolved nothing.
+			if (!sdk::mappings::bound())
+				return false;
+			return state_of(f).available;
+		}
+
+		const char* why_not(feature f)
+		{
+			if ((int)f < 0 || f >= feature::count)
+				return "";
+			if (!sdk::mappings::bound())
+				return "mappings are not bound";
+			return state_of(f).reason.c_str();
+		}
+
+		// Feature names for the log, in enum order.
+		static const char* const k_names[] = {
+			"model pitch", "rotation echo", "riptide", "reach",
+			"slot switch", "storage esp", "team colours", "input write",
+		};
+
+		void log_summary()
+		{
+			std::string gated;
+			for (int i = 0; i < (int)feature::count; ++i)
+			{
+				if (available((feature)i))
+					continue;
+				if (!gated.empty())
+					gated += ", ";
+				gated += k_names[i];
+			}
+
+			if (gated.empty())
+				logger::log(std::string("[caps] every feature is supported on ") +
+				            sdk::version::name());
+			else
+				logger::log("[caps] unavailable on " + std::string(sdk::version::name()) +
+				            ": " + gated);
+		}
+	}
+}

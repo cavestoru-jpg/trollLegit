@@ -4,6 +4,7 @@
 #include <imgui.h>
 #include <sdk/version/version.h>
 #include <sdk/mappings/mappings.hpp>
+#include <sdk/caps/caps.h>
 #include "../../modules/aiming/silent_aim.h"
 #include "../../modules/killaura/killaura.h"
 #include <imgui_internal.h>
@@ -61,6 +62,26 @@ bool slider_d( const char* label, double* v, float mn, float mx, const char* fmt
 // Accent colour lives in the style, not in globals, so the picker needs its
 // own storage that it can write back into ImGuiCol_Scheme every frame.
 float g_accent[4] = { 142.f / 255.f, 132.f / 255.f, 255.f / 255.f, 1.f };
+
+// Draws a control the running Minecraft version cannot support as disabled, with
+// the reason underneath. A control that is present and silently inert is the one
+// thing AGENT.md asks this menu never to show: "it is off" and "this version
+// cannot do it" have to look different.
+static bool begin_gate( sdk::caps::feature f )
+{
+	if ( sdk::caps::available( f ) )
+		return false;
+	ImGui::BeginDisabled( true );
+	return true;
+}
+
+static void end_gate( bool gated, sdk::caps::feature f )
+{
+	if ( !gated )
+		return;
+	ImGui::EndDisabled( );
+	ImGui::TextDisabled( "%s", sdk::caps::why_not( f ) );
+}
 
 // A module's enable checkbox with its key binding, plus the Hold/Toggle choice
 // tucked into the checkbox's options popup.
@@ -284,8 +305,12 @@ void page_combat_aim( ) {
 				} );
 			}
 
-			w.combo( xorstr_( "Move correction##aim" ), &globals::aiming_movement_correction,
-			         { xorstr_( "Off" ), xorstr_( "Strict" ) } );
+			{
+				const bool gated = begin_gate( sdk::caps::feature::input_write );
+				w.combo( xorstr_( "Move correction##aim" ), &globals::aiming_movement_correction,
+				{ xorstr_( "Off" ), xorstr_( "Strict" ) } );
+				end_gate( gated, sdk::caps::feature::input_write );
+			}
 			w.slider_int( xorstr_( "Ticks until reset##aim" ), &globals::aiming_ticks_until_reset, 1, 30, "%d" );
 			w.slider_float( xorstr_( "Reset threshold##aim" ), &globals::aiming_reset_threshold, 1.f, 180.f, "%.0f" );
 
@@ -395,7 +420,11 @@ void page_combat_melee( ) {
 
 		cm.begin_child( xorstr_( "Reach" ), { half, 0 } );
 		{
-			bind_checkbox( xorstr_( "Enabled##reach" ), &globals::reach_enabled, &globals::reach_keybind, &globals::reach_mode );
+			{
+				const bool gated = begin_gate( sdk::caps::feature::reach );
+				bind_checkbox( xorstr_( "Enabled##reach" ), &globals::reach_enabled, &globals::reach_keybind, &globals::reach_mode );
+				end_gate( gated, sdk::caps::feature::reach );
+			}
 			slider_d( xorstr_( "Distance##reach" ), &globals::reach_distance, 3.f, 6.f, "%.2f" );
 		}
 		cm.end_child( );
@@ -563,7 +592,11 @@ void page_visuals( ) {
 
 		cm.begin_child( xorstr_( "Storage ESP" ), { half, 0 } );
 		{
-			bind_checkbox( xorstr_( "Enabled##sesp" ), &globals::storage_esp_enabled, &globals::storage_esp_keybind, &globals::storage_esp_mode );
+			{
+				const bool gated = begin_gate( sdk::caps::feature::storage_esp );
+				bind_checkbox( xorstr_( "Enabled##sesp" ), &globals::storage_esp_enabled, &globals::storage_esp_keybind, &globals::storage_esp_mode );
+				end_gate( gated, sdk::caps::feature::storage_esp );
+			}
 			w.checkbox( xorstr_( "Chests##sesp" ), &globals::storage_esp_chest );
 			w.checkbox( xorstr_( "Ender chests##sesp" ), &globals::storage_esp_ender_chest );
 			w.checkbox( xorstr_( "Shulkers##sesp" ), &globals::storage_esp_shulker );
@@ -617,7 +650,11 @@ void page_utility( ) {
 	{
 		cm.begin_child( xorstr_( "Teams" ), { half, 0 } );
 		{
-			w.checkbox( xorstr_( "Enabled##teams" ), &globals::teams_enabled );
+			{
+				const bool gated = begin_gate( sdk::caps::feature::team_colours );
+				w.checkbox( xorstr_( "Enabled##teams" ), &globals::teams_enabled );
+				end_gate( gated, sdk::caps::feature::team_colours );
+			}
 			w.slider_int( xorstr_( "Colour tolerance##teams" ), &globals::teams_color_tolerance, 0, 200, "%d" );
 		}
 		cm.end_child( );
