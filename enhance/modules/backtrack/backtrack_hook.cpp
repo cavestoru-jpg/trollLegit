@@ -450,7 +450,7 @@ bool enhance::modules::backtrack_hook::init()
 		// In case 2, we'll find out when trying to attach the hook
 		if (result == 3)
 		{
-			logger::log_debug("[BacktrackHook] JNIHook_Init returned 3 (JNIHOOK_ERR_SETUP_CLASS_FILE_LOAD_HOOK)");
+			logger::log_error("[BacktrackHook] JNIHook_Init failed=3 (JNIHOOK_ERR_ADD_JVMTI_CAPS) -- the JVM refused the JVMTI capabilities; nothing can be hooked this session");
 			logger::log_debug("[BacktrackHook] This might mean JVMTI is already initialized by another module");
 			logger::log_debug("[BacktrackHook] Continuing anyway - will attempt hook attachment");
 			// Mark as initialized so we can try to attach the hook

@@ -366,9 +366,31 @@ int main(int argc, char** argv) {
     }
     
     WaitForSingleObject(hThread, 5000);
+
+    // LoadLibraryA's return value comes back as the remote thread's exit code:
+    // zero means the DLL did not load. The client refuses to load a second time
+    // into a game that already has it -- two JNIHook environments cannot both
+    // hold can_suspend, and a half-applied hook there leaves a method native
+    // with nothing behind it, which kills the game. Reporting success regardless
+    // is how that went unnoticed.
+    DWORD remote_result = 0;
+    GetExitCodeThread(hThread, &remote_result);
     CloseHandle(hThread);
     CloseHandle(m_handle);
-    
+
+    if (remote_result == 0) {
+        DeleteFileA(dllPath.c_str());
+        SetConsoleColor(FOREGROUND_RED | FOREGROUND_INTENSITY);
+        WriteLine("");
+        WriteLine("the dll did not load.");
+        WriteLine("most likely enhance is already running in this minecraft --");
+        WriteLine("press End in the game to unload it, then inject again.");
+        WriteLine("");
+        SetConsoleColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+        Sleep(6000);
+        return 1;
+    }
+
     SetConsoleColor(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
     WriteLine("");
     WriteLine("injection successful!");

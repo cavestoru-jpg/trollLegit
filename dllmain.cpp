@@ -6,6 +6,22 @@
 
 static HMODULE g_hModule = nullptr;
 
+// Held for as long as this client is live in the game; see claim_this_process.
+// Released when it unloads, so the End-key-then-inject-again cycle the injector
+// is built around keeps working.
+static HANDLE g_claim = nullptr;
+
+static void release_claim()
+{
+    if (!g_claim)
+        return;
+    // Closing the last handle destroys the object, which is the whole signal.
+    // The mutex is never acquired -- ownership would belong to the thread that
+    // ran DllMain, and this runs on another one.
+    CloseHandle(g_claim);
+    g_claim = nullptr;
+}
+
 // Returns true when the module should be unmapped.
 static bool run_client()
 {
@@ -89,6 +105,10 @@ void __stdcall enhance_thread(HINSTANCE instance)
         free_module = false;
     }
 
+    // Whether or not the module is unmapped, this client is done: let the next
+    // injection in.
+    release_claim();
+
     if (!free_module)
         return;
 
@@ -97,10 +117,49 @@ void __stdcall enhance_thread(HINSTANCE instance)
     FreeLibraryAndExitThread(g_hModule, 0);
 }
 
+// One client per game, enforced by a named mutex the process owns for as long as
+// the DLL is mapped.
+//
+// A second injection into a game that already has the client is not a harmless
+// duplicate. `can_suspend` is a solo-per-JVM JVMTI capability, so the second
+// JNIHook environment cannot get it; an attach then either refuses or -- worse,
+// with Force attach on -- redefines a class, makes the target method native and
+// fails before binding an implementation. The method is left native with nothing
+// behind it and the game dies on the next call to it. That is not a theoretical
+// failure: it happened here, injecting twice into one 1.21.4 while chasing
+// something else.
+static bool claim_this_process()
+{
+    char name[64];
+    wsprintfA(name, "Local\\enhance_client_%lu", GetCurrentProcessId());
+
+    // Held until the client unloads, then released by release_claim() so a fresh
+    // injection can take its place.
+    HANDLE claim = CreateMutexA(nullptr, FALSE, name);
+    if (!claim)
+        return false;
+
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        CloseHandle(claim);
+        return false;
+    }
+
+    g_claim = claim;
+    return true;
+}
+
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD ul_reason_for_call, LPVOID lp_reserved)
 {
     if (ul_reason_for_call != DLL_PROCESS_ATTACH)
         return FALSE;
+
+    if (!claim_this_process())
+    {
+        // Already running in this game. Returning FALSE makes LoadLibrary fail,
+        // so the injector reports it and nothing is touched.
+        return FALSE;
+    }
 
     CreateThread(0, 0, (LPTHREAD_START_ROUTINE)enhance_thread, h_module, 0, 0);
 

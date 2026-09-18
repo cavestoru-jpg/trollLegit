@@ -1799,7 +1799,15 @@
       "seed": {
         "from": "1.21.1",
         "why": "Input became the immutable PlayerInput record in 1.21.2, so 1.21.11 has no such field"
-      }
+      },
+      "versions": [
+        {
+          "since": "1.21.2",
+          "until": "1.21.4",
+          "owner": "net/minecraft/client/player/ClientInput",
+          "why": "1.21.2 split the key presses into an immutable record but kept forwardImpulse as a mutable field, now on ClientInput. 1.21.5 replaced both impulses with ClientInput.moveVector"
+        }
+      ]
     },
     {
       "id": "input_sideways",
@@ -1812,7 +1820,15 @@
       "seed": {
         "from": "1.21.1",
         "why": "same as input_forward"
-      }
+      },
+      "versions": [
+        {
+          "since": "1.21.2",
+          "until": "1.21.4",
+          "owner": "net/minecraft/client/player/ClientInput",
+          "why": "1.21.2 split the key presses into an immutable record but kept leftImpulse as a mutable field, now on ClientInput. 1.21.5 replaced both impulses with ClientInput.moveVector"
+        }
+      ]
     },
     {
       "id": "client_player_input_field",

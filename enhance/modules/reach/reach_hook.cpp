@@ -57,15 +57,17 @@ bool enhance::modules::reach_hook::init()
 		jnihook_result_t result = JNIHook_Init(jvm);
 		if (result != JNIHOOK_OK)
 		{
-			// 3 means JNIHook is already up — most likely because killaura
-			// attached first. Treat it as success, the way every other module
-			// does. The previous code answered it by calling JNIHook_Shutdown
-			// and re-initialising, which tore down the OTHER modules' hooks
-			// through the broken FindClass restore path.
-			if (result != 3)
-			{
-				return false;
-			}
+			// 3 is JNIHOOK_ERR_ADD_JVMTI_CAPS, NOT "already initialised" -- Init
+			// returns OK when it is already up. This code used to read it as
+			// success, which is the exact trap AGENT.md opens the hooking section
+			// with: g_jnihook is left null and the attach that follows can only
+			// fail, having already told the user it was fine.
+			logger::log_error(std::string("[reach] JNIHook_Init failed=") +
+				std::to_string((int)result) +
+				(result == JNIHOOK_ERR_ADD_JVMTI_CAPS
+					? " -- the JVM would not grant the JVMTI capabilities (another agent holds can_suspend?)"
+					: ""));
+			return false;
 		}
 		jnihook_initialized = true;
 	}
@@ -120,9 +122,18 @@ bool enhance::modules::reach_hook::init()
 		{
 			jint mods = 0;
 			if (jvmti->GetMethodModifiers(method_id, &mods) == JVMTI_ERROR_NONE)
+			{
+				// The raw bits travel with the verdict: "left native" is a
+				// frightening claim to make from one flag test, and when it turned
+				// up on a JVM where nothing had been redefined there was no way to
+				// tell a real casualty from a misread.
 				msg += (mods & 0x0100 /* ACC_NATIVE */)
 					? " -- METHOD LEFT NATIVE, the game will crash on the next call"
 					: " -- method is not native, no damage done";
+				char bits[32];
+				sprintf_s(bits, sizeof(bits), " (modifiers 0x%04x)", (unsigned)mods);
+				msg += bits;
+			}
 		}
 
 		logger::log_error(msg);

@@ -238,12 +238,19 @@ def main():
                 continue
             check_override(ov, sym_id, problems)
             applied.add(sym_id)
-            symbols.append({
+            entry = {
                 "id": sym_id, "kind": ov["kind"],
                 "owner": ov["owner"], "name": ov["name"], "desc": ov["desc"],
                 "emit_name": ident, "emit_sig": pairs.get(ident),
                 "seed": {"from": ov.get("resolve_from"), "why": ov.get("why")},
-            })
+            }
+            # Carried here too: a symbol described entirely by an override can
+            # still move between classes later, and dropping its rules made
+            # input_forward read as absent from 1.21.2 on when it had only
+            # changed owner.
+            if ov.get("versions"):
+                entry["versions"] = ov["versions"]
+            symbols.append(entry)
             if pairs.get(ident):
                 consumed_sigs.add(pairs[ident])
             continue
