@@ -205,5 +205,195 @@ namespace sdk
 			clear_exception(env);
 			return true;
 		}
+
+		// --- movement input ---------------------------------------------------
+		//
+		// The same two numbers under three different skins. Which one this version
+		// wears is read off the symbol table rather than a version number: the
+		// impulse fields exist (on Input, then on ClientInput) until 1.21.5
+		// replaces them with a Vec2.
+
+		// LocalPlayer.input -- the ClientInput (or, before 1.21.2, the Input).
+		static jobject fetch_input_object(JNIEnv* env, jobject player)
+		{
+			if (!sdk::mappings::have(sdk::mappings::client_player_input_field_name))
+				return nullptr;
+
+			jclass player_class = env->GetObjectClass(player);
+			if (!player_class)
+			{
+				clear_exception(env);
+				return nullptr;
+			}
+
+			jfieldID fid = env->GetFieldID(player_class,
+				sdk::mappings::client_player_input_field_name,
+				sdk::mappings::client_player_input_field_sig);
+			clear_exception(env);
+			env->DeleteLocalRef(player_class);
+			if (!fid)
+				return nullptr;
+
+			jobject input = env->GetObjectField(player, fid);
+			clear_exception(env);
+			return input;
+		}
+
+		// Both impulse fields, when this version still has them.
+		static bool impulse_fields(JNIEnv* env, jobject input, jfieldID& forward, jfieldID& sideways)
+		{
+			forward = nullptr;
+			sideways = nullptr;
+			if (!sdk::mappings::have(sdk::mappings::input_forward_name) ||
+			    !sdk::mappings::have(sdk::mappings::input_sideways_name))
+				return false;
+
+			jclass input_class = env->GetObjectClass(input);
+			if (!input_class)
+			{
+				clear_exception(env);
+				return false;
+			}
+
+			forward = env->GetFieldID(input_class, sdk::mappings::input_forward_name,
+			                          sdk::mappings::input_forward_sig);
+			clear_exception(env);
+			sideways = env->GetFieldID(input_class, sdk::mappings::input_sideways_name,
+			                           sdk::mappings::input_sideways_sig);
+			clear_exception(env);
+			env->DeleteLocalRef(input_class);
+			return forward && sideways;
+		}
+
+		// ClientInput.moveVector, from 1.21.5 on.
+		static jfieldID move_vector_field(JNIEnv* env, jobject input)
+		{
+			if (!sdk::mappings::have(sdk::mappings::input_movement_vector_name))
+				return nullptr;
+
+			jclass input_class = env->GetObjectClass(input);
+			if (!input_class)
+			{
+				clear_exception(env);
+				return nullptr;
+			}
+
+			jfieldID fid = env->GetFieldID(input_class,
+				sdk::mappings::input_movement_vector_name,
+				sdk::mappings::input_movement_vector_sig);
+			clear_exception(env);
+			env->DeleteLocalRef(input_class);
+			return fid;
+		}
+
+		bool input_writable()
+		{
+			return sdk::mappings::have(sdk::mappings::client_player_input_field_name) &&
+			       ((sdk::mappings::have(sdk::mappings::input_forward_name) &&
+			         sdk::mappings::have(sdk::mappings::input_sideways_name)) ||
+			        (sdk::mappings::have(sdk::mappings::input_movement_vector_name) &&
+			         sdk::mappings::have(sdk::mappings::vec2_x_name)));
+		}
+
+		movement_input read_input(JNIEnv* env, jobject player)
+		{
+			movement_input out;
+			if (!env || !player)
+				return out;
+
+			jobject input = fetch_input_object(env, player);
+			if (!input)
+				return out;
+
+			jfieldID forward = nullptr, sideways = nullptr;
+			if (impulse_fields(env, input, forward, sideways))
+			{
+				out.forward = env->GetFloatField(input, forward);
+				out.sideways = env->GetFloatField(input, sideways);
+				clear_exception(env);
+				out.valid = true;
+				env->DeleteLocalRef(input);
+				return out;
+			}
+
+			jfieldID vec_fid = move_vector_field(env, input);
+			jobject vec = vec_fid ? env->GetObjectField(input, vec_fid) : nullptr;
+			clear_exception(env);
+			if (vec)
+			{
+				jclass vec_class = env->GetObjectClass(vec);
+				jfieldID x = vec_class ? env->GetFieldID(vec_class, sdk::mappings::vec2_x_name,
+				                                         sdk::mappings::vec2_x_sig) : nullptr;
+				clear_exception(env);
+				jfieldID y = vec_class ? env->GetFieldID(vec_class, sdk::mappings::vec2_y_name,
+				                                         sdk::mappings::vec2_y_sig) : nullptr;
+				clear_exception(env);
+				if (x && y)
+				{
+					out.sideways = env->GetFloatField(vec, x);
+					out.forward = env->GetFloatField(vec, y);
+					clear_exception(env);
+					out.valid = true;
+				}
+				if (vec_class)
+					env->DeleteLocalRef(vec_class);
+				env->DeleteLocalRef(vec);
+			}
+
+			env->DeleteLocalRef(input);
+			return out;
+		}
+
+		bool write_input(JNIEnv* env, jobject player, const movement_input& in)
+		{
+			if (!env || !player || !in.valid)
+				return false;
+
+			jobject input = fetch_input_object(env, player);
+			if (!input)
+				return false;
+
+			bool wrote = false;
+
+			jfieldID forward = nullptr, sideways = nullptr;
+			if (impulse_fields(env, input, forward, sideways))
+			{
+				env->SetFloatField(input, forward, in.forward);
+				env->SetFloatField(input, sideways, in.sideways);
+				clear_exception(env);
+				wrote = true;
+			}
+			else
+			{
+				// 1.21.5+: the vector is a record-like Vec2, so writing means
+				// putting a new one in place rather than editing the old.
+				jfieldID vec_fid = move_vector_field(env, input);
+				if (vec_fid && sdk::mappings::have(sdk::mappings::vec2_class_sig))
+				{
+					jclass vec_class = sdk::classloader::find_class(env, sdk::mappings::vec2_class_sig);
+					clear_exception(env);
+					jmethodID ctor = vec_class ? env->GetMethodID(vec_class, "<init>", "(FF)V") : nullptr;
+					clear_exception(env);
+					if (ctor)
+					{
+						jobject fresh = env->NewObject(vec_class, ctor, (jfloat)in.sideways,
+						                               (jfloat)in.forward);
+						clear_exception(env);
+						if (fresh)
+						{
+							env->SetObjectField(input, vec_fid, fresh);
+							clear_exception(env);
+							env->DeleteLocalRef(fresh);
+							wrote = true;
+						}
+					}
+					if (vec_class)
+						env->DeleteLocalRef(vec_class);
+				}
+			}
+
+			env->DeleteLocalRef(input);
+			return wrote;
+		}
 	}
 }

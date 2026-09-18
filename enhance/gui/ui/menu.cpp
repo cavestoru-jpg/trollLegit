@@ -305,10 +305,20 @@ void page_combat_aim( ) {
 				} );
 			}
 
-			w.combo( xorstr_( "Move correction##aim" ), &globals::aiming_movement_correction,
-			         { xorstr_( "Off" ), xorstr_( "Strict" ) } );
-			if ( globals::aiming_movement_correction == 0 )
-				TextDisabled( xorstr_( "body moves along your real angle" ) );
+			{
+				// Silent needs writable input; every other mode works anywhere.
+				const bool silent_ok = sdk::caps::available( sdk::caps::feature::input_write );
+				if ( !silent_ok && globals::aiming_movement_correction == 2 )
+					globals::aiming_movement_correction = 1;
+				w.combo( xorstr_( "Move correction##aim" ), &globals::aiming_movement_correction,
+				         { xorstr_( "Off" ), xorstr_( "Strict" ), xorstr_( "Silent" ) } );
+				if ( globals::aiming_movement_correction == 0 )
+					TextDisabled( xorstr_( "body moves along your real angle" ) );
+				else if ( globals::aiming_movement_correction == 2 )
+					TextDisabled( xorstr_( "input rotated back, so the body keeps its direction" ) );
+				if ( !silent_ok )
+					TextDisabled( xorstr_( "Silent: %s" ), sdk::caps::why_not( sdk::caps::feature::input_write ) );
+			}
 			w.slider_int( xorstr_( "Ticks until reset##aim" ), &globals::aiming_ticks_until_reset, 1, 30, "%d" );
 			w.slider_float( xorstr_( "Reset threshold##aim" ), &globals::aiming_reset_threshold, 1.f, 180.f, "%.0f" );
 

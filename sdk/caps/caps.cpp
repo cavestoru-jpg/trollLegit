@@ -41,8 +41,14 @@ namespace sdk
 				  "the world's rendered block-entity set (1.21.9+)" },
 				{ feature::team_colours,  { "dyed_color_get_color", "dyed_color_component_class", nullptr },
 				  "the dyed-colour item component (1.20.5+)" },
-				{ feature::input_write,   { "input_forward", "input_sideways", nullptr },
-				  "writable movement input; 1.21.2 replaced it with an immutable record" },
+				// Two shapes, either will do: the impulse fields (wherever they
+				// live) or the movement vector that replaced them in 1.21.5.
+				{ feature::input_write,   { "client_player_input_field", "input_forward",
+				                            "input_sideways", nullptr },
+				  "the movement input fields" },
+				{ feature::input_write,   { "client_player_input_field", "input_movement_vector",
+				                            "vec2_x", nullptr },
+				  "ClientInput.moveVector" },
 			};
 
 			struct resolved
@@ -63,24 +69,43 @@ namespace sdk
 				r.computed = true;
 				r.available = true;
 
+				// Rows for one feature are ALTERNATIVES: a feature the game exposes
+				// two different ways (impulse fields, or the vector that replaced
+				// them) is available when either way resolves. Within a row, every
+				// symbol is required.
+				bool saw_row = false;
 				for (const requirement& req : k_requirements)
 				{
 					if (req.which != f)
 						continue;
+					saw_row = true;
 
+					bool row_ok = true;
 					for (int i = 0; i < 4 && req.symbols[i]; ++i)
 					{
 						// A symbol with no owner on this version is one the table
 						// reports absent -- the same "" the constants bind to.
-						if (sdk::mappings::have(sdk::mappings::owner_of(req.symbols[i])))
-							continue;
+						if (!sdk::mappings::have(sdk::mappings::owner_of(req.symbols[i])))
+						{
+							row_ok = false;
+							break;
+						}
+					}
 
-						r.available = false;
-						r.reason = std::string("needs ") + req.human +
-						           " -- absent on " + sdk::version::name();
+					if (row_ok)
+					{
+						r.available = true;
+						r.reason.clear();
 						return r;
 					}
+
+					r.available = false;
+					r.reason = std::string("needs ") + req.human +
+					           " -- absent on " + sdk::version::name();
 				}
+
+				if (!saw_row)
+					r.available = true;
 				return r;
 			}
 		}

@@ -18,17 +18,14 @@
     "wrong thing. The triple stays as documentation, the symbol reports absent, and",
     "the feature degrades visibly instead of corrupting a value or a stack frame."
   ],
-
   "living_entity_get_equipped_stack": {
     "owner": "net/minecraft/world/entity/LivingEntity",
     "why": "class_1309 is what every call site resolves on; EquipmentUser is the interface that also declares it"
   },
-
   "block_entity_get_pos": {
     "owner": "net/minecraft/world/level/block/entity/BlockEntity",
     "why": "storage_esp calls it on the block entity itself, not through RandomizableContainer"
   },
-
   "keyboard_input_tick": {
     "kind": "method",
     "owner": "net/minecraft/client/player/KeyboardInput",
@@ -37,25 +34,38 @@
     "resolve_from": "1.21.1",
     "why": "header carries an empty sentinel; the symbol is real on older versions"
   },
-
   "input_forward": {
     "kind": "field",
     "owner": "net/minecraft/client/player/Input",
     "name": "forwardImpulse",
     "desc": "F",
     "resolve_from": "1.21.1",
-    "why": "Input became the immutable PlayerInput record in 1.21.2, so 1.21.11 has no such field"
+    "why": "Input became the immutable PlayerInput record in 1.21.2, so 1.21.11 has no such field",
+    "versions": [
+      {
+        "since": "1.21.2",
+        "until": "1.21.4",
+        "owner": "net/minecraft/client/player/ClientInput",
+        "why": "1.21.2 split the key presses into an immutable record but kept forwardImpulse as a mutable field, now on ClientInput. 1.21.5 replaced both impulses with ClientInput.moveVector"
+      }
+    ]
   },
-
   "input_sideways": {
     "kind": "field",
     "owner": "net/minecraft/client/player/Input",
     "name": "leftImpulse",
     "desc": "F",
     "resolve_from": "1.21.1",
-    "why": "same as input_forward"
+    "why": "same as input_forward",
+    "versions": [
+      {
+        "since": "1.21.2",
+        "until": "1.21.4",
+        "owner": "net/minecraft/client/player/ClientInput",
+        "why": "1.21.2 split the key presses into an immutable record but kept leftImpulse as a mutable field, now on ClientInput. 1.21.5 replaced both impulses with ClientInput.moveVector"
+      }
+    ]
   },
-
   "input_sneaking": {
     "kind": "field",
     "owner": "net/minecraft/client/player/Input",
@@ -64,40 +74,51 @@
     "resolve_from": "1.21.1",
     "why": "same as input_forward"
   },
-
   "get_camera": {
     "versions": [
-      { "since": "26.2", "name": "mainCamera",
-        "why": "GameRenderer.getMainCamera lost its get- prefix in 26.2" }
+      {
+        "since": "26.2",
+        "name": "mainCamera",
+        "why": "GameRenderer.getMainCamera lost its get- prefix in 26.2"
+      }
     ]
   },
-
   "update_crosshair_target": {
     "versions": [
-      { "since": "26.1", "owner": "net/minecraft/client/Minecraft", "name": "pick",
+      {
+        "since": "26.1",
+        "owner": "net/minecraft/client/Minecraft",
+        "name": "pick",
         "desc": "(F)V",
-        "why": "the interaction raycast moved off GameRenderer onto Minecraft in 26.1; same shape, different owner, which is why the table carries the owner class" }
+        "why": "the interaction raycast moved off GameRenderer onto Minecraft in 26.1; same shape, different owner, which is why the table carries the owner class"
+      }
     ]
   },
-
   "get_fov": {
     "versions": [
-      { "until": "1.21.1", "desc": "(Lnet/minecraft/client/Camera;FZ)D",
-        "why": "GameRenderer.getFov returned double until 1.21.2. sdk::compat::field_of_view picks CallDoubleMethod or CallFloatMethod from the bound descriptor's return type" },
-      { "since": "26.1", "owner": "net/minecraft/client/Camera", "name": "getFov",
+      {
+        "until": "1.21.1",
+        "desc": "(Lnet/minecraft/client/Camera;FZ)D",
+        "why": "GameRenderer.getFov returned double until 1.21.2. sdk::compat::field_of_view picks CallDoubleMethod or CallFloatMethod from the bound descriptor's return type"
+      },
+      {
+        "since": "26.1",
+        "owner": "net/minecraft/client/Camera",
+        "name": "getFov",
         "desc": "()F",
-        "why": "FOV state moved onto Camera in 26.1 and the getter lost its arguments. The same helper reads the arity off the descriptor, so the call site does not branch on a version number" }
+        "why": "FOV state moved onto Camera in 26.1 and the getter lost its arguments. The same helper reads the arity off the descriptor, so the call site does not branch on a version number"
+      }
     ]
   },
-
   "swing_hand": {
     "versions": [
-      { "since": "26.3",
+      {
+        "since": "26.3",
         "desc": "(Lnet/minecraft/world/InteractionHand;Lnet/minecraft/world/item/component/SwingAnimation;Z)Z",
-        "why": "26.3 reworked swings into item components: swing(InteractionHand) gained a SwingAnimation argument and a boolean return. sdk::compat::swing_hand reads the arity off the descriptor and passes SwingAnimation.DEFAULT" }
+        "why": "26.3 reworked swings into item components: swing(InteractionHand) gained a SwingAnimation argument and a boolean return. sdk::compat::swing_hand reads the arity off the descriptor and passes SwingAnimation.DEFAULT"
+      }
     ]
   },
-
   "swing_animation_class": {
     "new": true,
     "kind": "class",
@@ -105,7 +126,6 @@
     "emit_sig": "swing_animation_class_sig",
     "why": "26.3 only; the component 26.3's swing() requires"
   },
-
   "swing_animation_default": {
     "new": true,
     "kind": "field",
@@ -116,111 +136,174 @@
     "emit_sig": "swing_animation_default_sig",
     "why": "the stock swing; what an attack that carries no item-specific animation should send"
   },
-
   "trident_on_stopped_using": {
     "versions": [
-      { "until": "1.21.1",
+      {
+        "until": "1.21.1",
         "desc": "(Lnet/minecraft/world/item/ItemStack;Lnet/minecraft/world/level/Level;Lnet/minecraft/world/entity/LivingEntity;I)V",
-        "why": "TridentItem.onStoppedUsing gained a boolean return in 1.21.2. tick_movement_hook registers a void-returning callback for the older shape, chosen from the bound descriptor" }
+        "why": "TridentItem.onStoppedUsing gained a boolean return in 1.21.2. tick_movement_hook registers a void-returning callback for the older shape, chosen from the bound descriptor"
+      }
     ]
   },
-
   "camera_get_yaw": {
     "versions": [
-      { "until": "1.21.10", "name": "getYRot",
-        "why": "Camera.getYRot was renamed getYaw in 1.21.11; same ()F, pure rename" }
+      {
+        "until": "1.21.10",
+        "name": "getYRot",
+        "why": "Camera.getYRot was renamed getYaw in 1.21.11; same ()F, pure rename"
+      }
     ]
   },
-
   "camera_get_pitch": {
     "versions": [
-      { "until": "1.21.10", "name": "getXRot",
-        "why": "renamed getPitch in 1.21.11; same ()F" }
+      {
+        "until": "1.21.10",
+        "name": "getXRot",
+        "why": "renamed getPitch in 1.21.11; same ()F"
+      }
     ]
   },
-
   "horse_class": {
     "versions": [
-      { "until": "1.21.10", "class": "net/minecraft/world/entity/animal/horse/AbstractHorse",
-        "why": "1.21.11 moved the horse package; the class is otherwise the same" }
+      {
+        "until": "1.21.10",
+        "class": "net/minecraft/world/entity/animal/horse/AbstractHorse",
+        "why": "1.21.11 moved the horse package; the class is otherwise the same"
+      }
     ]
   },
-
   "controlled_rotation": {
     "versions": [
-      { "until": "1.21.10", "owner": "net/minecraft/world/entity/animal/horse/AbstractHorse",
-        "why": "follows horse_class through the package move" }
+      {
+        "until": "1.21.10",
+        "owner": "net/minecraft/world/entity/animal/horse/AbstractHorse",
+        "why": "follows horse_class through the package move"
+      }
     ]
   },
-
   "input_class": {
     "versions": [
-      { "until": "1.21.1", "class": "net/minecraft/client/player/Input",
-        "why": "the mutable Input class; 1.21.2 replaced it with the PlayerInput record" }
+      {
+        "until": "1.21.1",
+        "class": "net/minecraft/client/player/Input",
+        "why": "the mutable Input class; 1.21.2 replaced it with the PlayerInput record"
+      }
     ]
   },
-
   "input_tick": {
     "versions": [
-      { "until": "1.21.3", "owner": "net/minecraft/client/player/Input", "desc": "(ZF)V",
-        "why": "tick lived on Input itself before the record split it out to KeyboardInput" }
+      {
+        "until": "1.21.1",
+        "owner": "net/minecraft/client/player/Input",
+        "desc": "(ZF)V",
+        "why": "tick lived on Input itself before 1.21.2 split the key presses into a record"
+      },
+      {
+        "since": "1.21.2",
+        "until": "1.21.3",
+        "desc": "(ZF)V",
+        "why": "moved to ClientInput but kept the slowdown arguments until 1.21.4 dropped them"
+      }
     ]
   },
-
   "client_player_input_field": {
     "versions": [
-      { "until": "1.21.1", "desc": "Lnet/minecraft/client/player/Input;",
-        "why": "the field holds the mutable Input before 1.21.2; read as jobject either way" }
+      {
+        "until": "1.21.1",
+        "desc": "Lnet/minecraft/client/player/Input;",
+        "why": "the field holds the mutable Input before 1.21.2; read as jobject either way"
+      }
     ]
   },
-
   "inventory_set_selected_slot": {
     "versions": [
-      { "since": "1.21.2", "until": "1.21.4", "name": "setSelectedHotbarSlot",
-        "why": "renamed setSelectedSlot in 1.21.5; same (I)V. Before 1.21.2 there is no setter at all and the selected slot is written as a field" }
+      {
+        "since": "1.21.2",
+        "until": "1.21.4",
+        "name": "setSelectedHotbarSlot",
+        "why": "renamed setSelectedSlot in 1.21.5; same (I)V. Before 1.21.2 there is no setter at all and the selected slot is written as a field"
+      }
     ]
   },
-
   "send_packet": {
     "versions": [
-      { "until": "1.20.1", "owner": "net/minecraft/client/multiplayer/ClientPacketListener",
-        "why": "1.20.2 split the common listener out and send(Packet) moved to ClientCommonPacketListenerImpl with a new intermediary id, so the rename finder cannot follow it. Call sites resolve on the live handler object, which inherits it either way" }
+      {
+        "until": "1.20.1",
+        "owner": "net/minecraft/client/multiplayer/ClientPacketListener",
+        "why": "1.20.2 split the common listener out and send(Packet) moved to ClientCommonPacketListenerImpl with a new intermediary id, so the rename finder cannot follow it. Call sites resolve on the live handler object, which inherits it either way"
+      }
     ]
   },
-
   "entity_scoreboard_name": {
     "versions": [
-      { "until": "1.20.2", "owner": "net/minecraft/world/entity/Entity",
-        "why": "1.20.3 moved the declaration; returns a Component either way" }
+      {
+        "until": "1.20.2",
+        "owner": "net/minecraft/world/entity/Entity",
+        "why": "1.20.3 moved the declaration; returns a Component either way"
+      }
     ]
   },
-
   "entity_get_team": {
     "versions": [
-      { "until": "1.20.2", "desc": "()Lnet/minecraft/world/scores/Team;",
-        "why": "the return type narrowed to PlayerTeam in 1.20.3; jobject either way" }
+      {
+        "until": "1.20.2",
+        "desc": "()Lnet/minecraft/world/scores/Team;",
+        "why": "the return type narrowed to PlayerTeam in 1.20.3; jobject either way"
+      }
     ]
   },
-
   "entity_fall_distance": {
     "versions": [
-      { "until": "1.21.4", "desc": "F",
-        "why": "fallDistance was a float until 1.21.5 and is a double after. sdk/minecraft/entity/entity.cpp picks its accessor from the bound descriptor, so both shapes read correctly" }
+      {
+        "until": "1.21.4",
+        "desc": "F",
+        "why": "fallDistance was a float until 1.21.5 and is a double after. sdk/minecraft/entity/entity.cpp picks its accessor from the bound descriptor, so both shapes read correctly"
+      }
     ]
   },
-
   "entity_handle_fall_damage": {
     "versions": [
-      { "until": "1.21.4", "desc": "(FFLnet/minecraft/world/damagesource/DamageSource;)Z",
-        "why": "first argument follows fallDistance from float to double in 1.21.5. No C++ caller today; the rule keeps the table honest" }
+      {
+        "until": "1.21.4",
+        "desc": "(FFLnet/minecraft/world/damagesource/DamageSource;)Z",
+        "why": "first argument follows fallDistance from float to double in 1.21.5. No C++ caller today; the rule keeps the table honest"
+      }
     ]
   },
-
   "world_renderer_render": {
     "versions": [
-      { "until": "1.21.8",
+      {
+        "until": "1.21.8",
         "desc": "(Lcom/mojang/blaze3d/vertex/PoseStack;FJZLnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/GameRenderer;Lnet/minecraft/client/renderer/LightTexture;Lorg/joml/Matrix4f;)V",
-        "why": "the level render signature changes nearly every release. Nothing hooks it -- the header keeps it as a documented dead end -- so the rule exists to stop it reading as a missing symbol" }
+        "why": "the level render signature changes nearly every release. Nothing hooks it -- the header keeps it as a documented dead end -- so the rule exists to stop it reading as a missing symbol"
+      }
     ]
+  },
+  "vec2_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/world/phys/Vec2",
+    "emit_sig": "vec2_class_sig",
+    "why": "the movement vector ClientInput exposes from 1.21.5 on; constructed to write input"
+  },
+  "vec2_x": {
+    "new": true,
+    "kind": "field",
+    "owner": "net/minecraft/world/phys/Vec2",
+    "name": "x",
+    "desc": "F",
+    "emit_name": "vec2_x_name",
+    "emit_sig": "vec2_x_sig",
+    "why": "sideways impulse in ClientInput.moveVector"
+  },
+  "vec2_y": {
+    "new": true,
+    "kind": "field",
+    "owner": "net/minecraft/world/phys/Vec2",
+    "name": "y",
+    "desc": "F",
+    "emit_name": "vec2_y_name",
+    "emit_sig": "vec2_y_sig",
+    "why": "forward impulse in ClientInput.moveVector"
   }
 }

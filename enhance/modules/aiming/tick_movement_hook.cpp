@@ -9,9 +9,11 @@
 #include "../../utils/logger.h"
 #include <sdk/mappings/mappings.hpp>
 #include <sdk/classloader.h>
+#include <sdk/compat/compat.h>
 #include <sdk/java/jvmti_dump.h>
 #include <sdk/render/render_view.h>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <windows.h>
@@ -403,6 +405,110 @@ static void* trident_callback()
 		return (void*)hkTridentStopped;
 	if (returns == 'V')
 		return (void*)hkTridentStoppedVoid;
+	return nullptr;
+}
+
+// ClientInput.tick -- where the game rebuilds this tick's movement input.
+//
+// Silent movement correction lives here and nowhere else. The server recomputes
+// the movement direction from the rotation it was told, so if it was told
+// yaw + delta, an input rotated by -delta produces exactly the direction the
+// player asked for. Strict gets the same agreement by turning the body instead,
+// which is honest but visibly turns you; this keeps the body where it was.
+//
+// It has to run AFTER the original: this method is what writes the input for the
+// tick, so anything written before it is overwritten immediately. And it has to
+// be its own hook rather than part of the player tick wrap, because the player
+// tick calls this early and consumes the result much later, in travel().
+static jmethodID ORIG_input_tick = nullptr, g_mid_input_tick = nullptr;
+static jclass    g_input_class = nullptr;
+static bool      g_input_detached_ok = true;
+
+static void rotate_input_for_silent(JNIEnv* env)
+{
+	if (globals::aiming_movement_correction != 2)
+		return;
+
+	jobject player = fetch_local_player(env);
+	if (!player)
+		return;
+
+	do
+	{
+		if (!g_mid_get_yaw)
+			break;
+
+		const silent_angles_t want = resolve_silent_angles(env, player);
+		if (!want.active)
+			break;
+
+		const float real_yaw = env->CallFloatMethod(player, g_mid_get_yaw);
+		if (env->ExceptionCheck()) { env->ExceptionClear(); break; }
+
+		// Shortest way round, so a target across the wrap point does not rotate
+		// the input the long way to the same bearing.
+		float delta = want.yaw - real_yaw;
+		while (delta <= -180.0f) delta += 360.0f;
+		while (delta > 180.0f)   delta -= 360.0f;
+		if (delta > -0.01f && delta < 0.01f)
+			break;
+
+		auto input = sdk::compat::read_input(env, player);
+		if (!input.valid)
+			break;
+		if (input.forward == 0.0f && input.sideways == 0.0f)
+			break;
+
+		// The game maps (sideways, forward) into the world with the rotation it
+		// is about to report, so undoing that rotation here leaves the world
+		// direction untouched.
+		const float rad = delta * 0.017453292f;
+		const float c = cosf(rad);
+		const float sn = sinf(rad);
+
+		sdk::compat::movement_input rotated;
+		rotated.sideways = input.sideways * c + input.forward * sn;
+		rotated.forward  = input.forward * c - input.sideways * sn;
+		rotated.valid = true;
+
+		sdk::compat::write_input(env, player, rotated);
+	} while (false);
+
+	env->DeleteLocalRef(player);
+}
+
+// 1.21.4+: ClientInput.tick()
+static void hkInputTick(JNIEnv* env, jobject thiz)
+{
+	if (ORIG_input_tick && g_input_class && thiz)
+	{
+		env->CallNonvirtualVoidMethod(thiz, g_input_class, ORIG_input_tick);
+		if (env->ExceptionCheck()) env->ExceptionClear();
+	}
+	rotate_input_for_silent(env);
+}
+
+// 1.20 - 1.21.3: tick(boolean slowDown, float slowdownFactor)
+static void hkInputTickSlowdown(JNIEnv* env, jobject thiz, jboolean slow, jfloat factor)
+{
+	if (ORIG_input_tick && g_input_class && thiz)
+	{
+		env->CallNonvirtualVoidMethod(thiz, g_input_class, ORIG_input_tick, slow, factor);
+		if (env->ExceptionCheck()) env->ExceptionClear();
+	}
+	rotate_input_for_silent(env);
+}
+
+// The arity is the whole difference, and it is in the descriptor.
+static void* input_tick_callback()
+{
+	const char* sig = sdk::mappings::input_tick_sig;
+	if (!sdk::mappings::have(sig))
+		return nullptr;
+	if (strcmp(sig, "()V") == 0)
+		return (void*)hkInputTick;
+	if (strcmp(sig, "(ZF)V") == 0)
+		return (void*)hkInputTickSlowdown;
 	return nullptr;
 }
 
@@ -1070,6 +1176,9 @@ bool enhance::modules::aiming::tick_movement_hook::init()
 			{ sdk::mappings::living_renderer_class_sig, sdk::mappings::update_render_state_name,
 			  sdk::mappings::update_render_state_sig, (void*)hkUpdateRenderState,
 			  &ORIG_update_render_state, &g_hooked_mid_rs, &g_rs_class, "model pitch" },
+			{ sdk::mappings::input_class_sig, sdk::mappings::input_tick_name,
+			  sdk::mappings::input_tick_sig, input_tick_callback(),
+			  &ORIG_input_tick, &g_mid_input_tick, &g_input_class, "movement input" },
 		};
 
 		for (const auto& h : extras)

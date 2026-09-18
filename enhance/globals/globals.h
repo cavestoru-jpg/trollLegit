@@ -345,7 +345,18 @@ namespace globals
 	// (travel -> updateVelocity -> getYaw) computes against the rotation we
 	// are showing the server.
 	//
-	// 0 = Off, 1 = Strict
+	// 0 = Off, 1 = Strict, 2 = Silent
+	//
+	// Off    the body keeps the player's real angle; the look packet still carries
+	//        the silent one, so the server computes movement from an angle the
+	//        body is not using -- which is the mismatch a rotation check looks for.
+	// Strict the whole tick runs on the silent angle, so client and server agree
+	//        and the body visibly turns with it.
+	// Silent the same agreement, but the movement input is rotated back by the
+	//        same delta inside ClientInput.tick, so the direction the player asked
+	//        for is the direction they get. Needs writable input -- see
+	//        sdk::caps::feature::input_write; the menu falls back to Strict where
+	//        it is unavailable.
 	inline int aiming_movement_correction = 1;
 
 	// --- Silent rotation, rebuilt from scratch --------------------------

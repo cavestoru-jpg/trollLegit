@@ -890,6 +890,15 @@ namespace sdk
 		// Hand enum + Hand.MAIN_HAND reuse the existing hand_class_sig /
 		// hand_main_hand_name / hand_main_hand_sig defined above.
 
+		// Vec2, the movement vector ClientInput has held since 1.21.5. Writing
+		// input means building one of these; before 1.21.5 the same two numbers
+		// are mutable float fields and this is absent.
+		extern const char* vec2_class_sig;
+		extern const char* vec2_x_name;
+		extern const char* vec2_x_sig;
+		extern const char* vec2_y_name;
+		extern const char* vec2_y_sig;
+
 		// 26.3 turned swings into an item component: swing(Hand) became
 		// swing(Hand, SwingAnimation, boolean). SwingAnimation.DEFAULT is the
 		// stock animation, which is what an attack with no item-specific swing

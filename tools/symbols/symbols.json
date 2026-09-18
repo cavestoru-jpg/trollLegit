@@ -1711,10 +1711,16 @@
       },
       "versions": [
         {
-          "until": "1.21.3",
+          "until": "1.21.1",
           "owner": "net/minecraft/client/player/Input",
           "desc": "(ZF)V",
-          "why": "tick lived on Input itself before the record split it out to KeyboardInput"
+          "why": "tick lived on Input itself before 1.21.2 split the key presses into a record"
+        },
+        {
+          "since": "1.21.2",
+          "until": "1.21.3",
+          "desc": "(ZF)V",
+          "why": "moved to ClientInput but kept the slowdown arguments until 1.21.4 dropped them"
         }
       ]
     },
@@ -2497,6 +2503,40 @@
       "owner": "net/minecraft/world/item/component/SwingAnimation",
       "name": "DEFAULT",
       "desc": "Lnet/minecraft/world/item/component/SwingAnimation;"
+    },
+    {
+      "id": "vec2_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "vec2_class_sig",
+      "seed": {
+        "why": "the movement vector ClientInput exposes from 1.21.5 on; constructed to write input"
+      },
+      "class": "net/minecraft/world/phys/Vec2"
+    },
+    {
+      "id": "vec2_x",
+      "kind": "field",
+      "emit_name": "vec2_x_name",
+      "emit_sig": "vec2_x_sig",
+      "seed": {
+        "why": "sideways impulse in ClientInput.moveVector"
+      },
+      "owner": "net/minecraft/world/phys/Vec2",
+      "name": "x",
+      "desc": "F"
+    },
+    {
+      "id": "vec2_y",
+      "kind": "field",
+      "emit_name": "vec2_y_name",
+      "emit_sig": "vec2_y_sig",
+      "seed": {
+        "why": "forward impulse in ClientInput.moveVector"
+      },
+      "owner": "net/minecraft/world/phys/Vec2",
+      "name": "y",
+      "desc": "F"
     },
     {
       "id": "channel_read0",
