@@ -11,6 +11,7 @@ namespace enhance::modules::killaura
 		bool  active = false;      // gates passed, module is doing work
 		bool  has_target = false;
 		bool  locked = false;      // kept a previously committed target
+		bool  attacked = false;    // queued a swing this tick
 		int   candidates = 0;
 		double distance = -1.0;
 		float yaw = 0.0f;

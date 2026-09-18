@@ -6,6 +6,7 @@
 #include <sdk/minecraft/entity/entity.h>
 
 #include <cmath>
+#include <chrono>
 
 namespace
 {
@@ -76,6 +77,18 @@ jobject enhance::modules::killaura::update_target(jobject world, jobject local_p
 
 	clear_lock(env);
 	g_dbg_locked = false;
+
+	// Throttle the expensive entity-list scan to ~tick rate. run() now calls this
+	// every worker pass (~10 ms) so the aim to a LOCKED target stays fresh, but a
+	// full re-scan that often is wasted work; between scans there is simply no
+	// target for that pass, which is a brief gap only while re-acquiring.
+	static unsigned long long s_scan_ms = 0;
+	const unsigned long long now_ms = static_cast<unsigned long long>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+	if (s_scan_ms != 0 && now_ms - s_scan_ms < 50)
+		return nullptr;
+	s_scan_ms = now_ms;
 
 	const TargetFilter filter{ s.players, s.mobs, s.animals, s.friends };
 

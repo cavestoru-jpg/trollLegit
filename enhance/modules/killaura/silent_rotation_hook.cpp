@@ -48,6 +48,18 @@ static jclass    g_interaction_mgr_class = nullptr;
 static jmethodID g_mid_attack_entity     = nullptr;
 static jmethodID g_mid_get_interaction   = nullptr;  // MC.getInteractionManager via field
 
+// swingHand(Hand) + Hand.MAIN_HAND, so the attack also swings the arm (animation
+// + HandSwingC2SPacket) the way vanilla doAttack does. Optional: if either is
+// unresolved the attack still lands, just without a swing. g_main_hand is a
+// GlobalRef so it can be used from the tick thread.
+static jmethodID g_mid_swing_hand = nullptr;
+static jobject   g_main_hand      = nullptr;
+
+// Set at the very start of shutdown so a tick that fires mid-teardown (the tick
+// hook calls fire_pending_attack) bails before touching state that is being
+// freed -- belt and suspenders on top of detaching the tick hook first.
+static std::atomic<bool> g_torn_down{false};
+
 static std::atomic<bool> g_fake_active{false};
 static float g_fake_yaw   = 0.0f;
 static float g_fake_pitch = 0.0f;
@@ -110,85 +122,19 @@ static void hkSendMovementPackets(JNIEnv* env, jobject thiz)
 		}
 	}
 
+	// Fire any pending attack BEFORE the flying packet goes out, not after.
+	// Vanilla sends the attack from handleInputEvents ahead of the movement
+	// packet, so sending it after sendMovementPackets is what Grim's Post /
+	// PacketOrder checks flag. When the tick hook is active it has usually
+	// already drained the slot before tick() even reached here (this call is
+	// then a no-op); this ordering matters for the triggerbot-only path, where
+	// the tick hook is not installed and this is the only drain.
+	enhance::modules::silent_rotation_hook::fire_pending_attack(env, thiz);
+
 	if (ORIG_sendMovementPackets && g_client_player_class && thiz)
 	{
 		env->CallNonvirtualVoidMethod(thiz, g_client_player_class, ORIG_sendMovementPackets);
 		if (env->ExceptionCheck()) env->ExceptionClear();
-	}
-
-	// Fire any pending attack RIGHT HERE, on the JVM tick thread, while the
-	// fake rotation is still applied. The Look packet was just queued by
-	// sendMovementPackets above; sending the Attack packet now guarantees
-	// channel order Look(fake) -> Attack. interactionManager.attackEntity
-	// will push InteractEntityC2SPacket on the same network handler.
-	// Fire the queued attack whenever one is queued, NOT only while this hook
-	// is holding a fake rotation. The rotation now comes from
-	// aiming::tick_movement_hook, which wraps the whole of tick() -- so by the
-	// time we get here the fake angles are already applied and the look packet
-	// above already carried them. Gating on this hook's own `active` flag
-	// would mean no attack ever fired once killaura moved to the manager.
-	if (thiz && !g_mid_attack_entity && g_pending_target.load(std::memory_order_acquire))
-	{
-		// Drain it anyway, or the GlobalRef leaks once per queued attack.
-		jobject stuck = g_pending_target.exchange(nullptr, std::memory_order_acq_rel);
-		if (stuck) env->DeleteGlobalRef(stuck);
-		logger::log_error("[attack] queued attack dropped: attackEntity is unresolved");
-	}
-
-	if (thiz && g_mid_attack_entity)
-	{
-		jobject target = g_pending_target.exchange(nullptr, std::memory_order_acq_rel);
-		if (target)
-		{
-			// Need MinecraftClient.interactionManager — fetch via the static
-			// MC instance + field.
-			jclass mc_cls = sdk::classloader::find_class(env, sdk::mappings::minecraftclass_sig);
-			if (mc_cls)
-			{
-				jfieldID mc_instance_fid = env->GetStaticFieldID(mc_cls,
-					sdk::mappings::minecraftclient_name, sdk::mappings::minecraftclient_sig);
-				if (mc_instance_fid)
-				{
-					jobject mc = env->GetStaticObjectField(mc_cls, mc_instance_fid);
-					if (mc)
-					{
-						jfieldID im_fid = env->GetFieldID(mc_cls,
-							sdk::mappings::interaction_manager_name,
-							sdk::mappings::interaction_manager_sig);
-						if (im_fid)
-						{
-							jobject im = env->GetObjectField(mc, im_fid);
-							if (im)
-							{
-								env->CallVoidMethod(im, g_mid_attack_entity, thiz, target);
-								// Report what actually happened. Queued and executed are
-								// different events, and an exception here used to be
-								// swallowed without trace -- attackEntity refusing the
-								// target looked identical to the attack never being
-								// drained at all.
-								if (env->ExceptionCheck())
-								{
-									env->ExceptionClear();
-									logger::log_error("[attack] attackEntity threw - target refused client-side");
-								}
-								else
-								{
-									logger::log("[attack] attackEntity executed on tick thread");
-								}
-								env->DeleteLocalRef(im);
-							}
-							else
-							{
-								logger::log_error("[attack] interactionManager was null");
-							}
-						}
-						env->DeleteLocalRef(mc);
-					}
-				}
-				env->DeleteLocalRef(mc_cls);
-			}
-			env->DeleteGlobalRef(target);
-		}
 	}
 
 	if (active && thiz && g_mid_set_yaw && g_mid_set_pitch)
@@ -208,9 +154,91 @@ static void hkSendMovementPackets(JNIEnv* env, jobject thiz)
 	}
 }
 
+void enhance::modules::silent_rotation_hook::fire_pending_attack(JNIEnv* env, jobject player)
+{
+	if (!env || !player) return;
+	if (g_torn_down.load(std::memory_order_acquire)) return;
+
+	// Drain-and-drop when the attack method never resolved, so the GlobalRef
+	// does not leak once per queued attack. Whichever hook reaches the pending
+	// slot first (this one from sendMovementPackets, or the tick hook after
+	// tick() returns) claims it via the atomic exchange, so a double call is a
+	// no-op rather than a double swing.
+	if (!g_mid_attack_entity && g_pending_target.load(std::memory_order_acquire))
+	{
+		jobject stuck = g_pending_target.exchange(nullptr, std::memory_order_acq_rel);
+		if (stuck) env->DeleteGlobalRef(stuck);
+		logger::log_error("[attack] queued attack dropped: attackEntity is unresolved");
+		return;
+	}
+
+	if (!g_mid_attack_entity) return;
+
+	jobject target = g_pending_target.exchange(nullptr, std::memory_order_acq_rel);
+	if (!target) return;
+
+	// Need MinecraftClient.interactionManager — fetch via the static MC
+	// instance + field.
+	jclass mc_cls = sdk::classloader::find_class(env, sdk::mappings::minecraftclass_sig);
+	if (mc_cls)
+	{
+		jfieldID mc_instance_fid = env->GetStaticFieldID(mc_cls,
+			sdk::mappings::minecraftclient_name, sdk::mappings::minecraftclient_sig);
+		if (mc_instance_fid)
+		{
+			jobject mc = env->GetStaticObjectField(mc_cls, mc_instance_fid);
+			if (mc)
+			{
+				jfieldID im_fid = env->GetFieldID(mc_cls,
+					sdk::mappings::interaction_manager_name,
+					sdk::mappings::interaction_manager_sig);
+				if (im_fid)
+				{
+					jobject im = env->GetObjectField(mc, im_fid);
+					if (im)
+					{
+						env->CallVoidMethod(im, g_mid_attack_entity, player, target);
+						if (env->ExceptionCheck())
+						{
+							env->ExceptionClear();
+							logger::log_error("[attack] attackEntity threw - target refused client-side");
+						}
+						else
+						{
+							logger::log("[attack] attackEntity executed on tick thread");
+						}
+
+						// Swing the arm the way vanilla doAttack does, right after
+						// the attack: this plays the animation client-side AND sends
+						// HandSwingC2SPacket. attackEntity alone does neither.
+						if (g_mid_swing_hand && g_main_hand)
+						{
+							env->CallVoidMethod(player, g_mid_swing_hand, g_main_hand);
+							if (env->ExceptionCheck()) env->ExceptionClear();
+						}
+
+						env->DeleteLocalRef(im);
+					}
+					else
+					{
+						logger::log_error("[attack] interactionManager was null");
+					}
+				}
+				env->DeleteLocalRef(mc);
+			}
+		}
+		env->DeleteLocalRef(mc_cls);
+	}
+	env->DeleteGlobalRef(target);
+}
+
 bool enhance::modules::silent_rotation_hook::init()
 {
 	if (g_attached) return true;
+
+	// Fresh attach: clear the teardown latch in case a previous shutdown set it
+	// while the DLL stayed loaded (a failed detach keeps the library mapped).
+	g_torn_down.store(false, std::memory_order_release);
 
 	// The attach may run on the client thread (posted there so it does
 	// not need can_suspend), and JNIEnv is thread-local -- the cached one
@@ -284,7 +312,14 @@ bool enhance::modules::silent_rotation_hook::init()
 	// in-hook attack path is disabled; killaura falls back to the worker-
 	// thread do_attack() with the usual packet-order risk).
 	{
-		jclass im_cls = sdk::classloader::find_class(env, "net/minecraft/class_636"); // ClientPlayerInteractionManager
+		// MultiPlayerGameMode, from the symbol table: the intermediary literal that
+		// used to be here does not exist on 26.x, where names are unobfuscated.
+		const char* im_owner = sdk::mappings::owner_of("attack_entity");
+		jclass im_cls = sdk::mappings::have(im_owner)
+			? sdk::classloader::find_class(env, im_owner) : nullptr;
+		if (!im_cls)
+			logger::log_error("[attack] MultiPlayerGameMode not resolvable; "
+			                  "queued attacks will fall back to the worker thread");
 		if (im_cls)
 		{
 			g_mid_attack_entity = env->GetMethodID(im_cls,
@@ -292,6 +327,33 @@ bool enhance::modules::silent_rotation_hook::init()
 				sdk::mappings::attack_entity_sig);
 			if (env->ExceptionCheck()) { env->ExceptionClear(); g_mid_attack_entity = nullptr; }
 			env->DeleteLocalRef(im_cls);
+		}
+	}
+
+	// Resolve swingHand(Hand) on the player class (inherited from LivingEntity;
+	// GetMethodID walks the hierarchy) and cache a GlobalRef to Hand.MAIN_HAND.
+	// Optional: without them the attack lands but does not swing.
+	{
+		g_mid_swing_hand = env->GetMethodID(cp_cls,
+			sdk::mappings::swing_hand_name, sdk::mappings::swing_hand_sig);
+		if (env->ExceptionCheck()) { env->ExceptionClear(); g_mid_swing_hand = nullptr; }
+
+		jclass hand_cls = sdk::classloader::find_class(env, sdk::mappings::hand_class_sig);
+		if (hand_cls)
+		{
+			jfieldID main_fid = env->GetStaticFieldID(hand_cls,
+				sdk::mappings::hand_main_hand_name, sdk::mappings::hand_main_hand_sig);
+			if (env->ExceptionCheck()) { env->ExceptionClear(); main_fid = nullptr; }
+			if (main_fid)
+			{
+				jobject main_local = env->GetStaticObjectField(hand_cls, main_fid);
+				if (main_local)
+				{
+					g_main_hand = env->NewGlobalRef(main_local);
+					env->DeleteLocalRef(main_local);
+				}
+			}
+			env->DeleteLocalRef(hand_cls);
 		}
 	}
 
@@ -326,6 +388,11 @@ bool enhance::modules::silent_rotation_hook::init()
 
 void enhance::modules::silent_rotation_hook::shutdown()
 {
+	// Slam the door before anything else: any in-flight fire_pending_attack (the
+	// tick hook can call it) now returns immediately instead of touching state
+	// we are about to free.
+	g_torn_down.store(true, std::memory_order_release);
+
 	// Undo the class redefinition FIRST. Everything below is bookkeeping; this
 	// is the part that decides whether unloading the DLL is survivable.
 	if (g_hooked_mid)
@@ -349,6 +416,14 @@ void enhance::modules::silent_rotation_hook::shutdown()
 	g_mid_set_pitch = nullptr;
 	g_fid_body_yaw = nullptr;
 	g_fid_head_yaw = nullptr;
+	g_mid_swing_hand = nullptr;
+
+	if (g_main_hand && enhance::instance)
+	{
+		try { auto e = enhance::instance->get_env(); if (e) e->DeleteGlobalRef(g_main_hand); }
+		catch (...) {}
+	}
+	g_main_hand = nullptr;
 
 	if (g_client_player_class && enhance::instance)
 	{
@@ -366,6 +441,11 @@ void enhance::modules::silent_rotation_hook::shutdown()
 bool enhance::modules::silent_rotation_hook::detached_cleanly()
 {
 	return g_detached_cleanly;
+}
+
+bool enhance::modules::silent_rotation_hook::attack_ready()
+{
+	return g_mid_attack_entity != nullptr;
 }
 
 void enhance::modules::silent_rotation_hook::set_fake_rotation(float yaw, float pitch)

@@ -315,6 +315,16 @@ namespace globals
 	inline bool killaura_no_attack_when_eat = true;
 	inline bool killaura_ignore_walls       = false;
 
+	// Clicker: killaura fires attacks on its own instead of only rotating.
+	// The attack is queued on the JVM tick thread right after the look packet
+	// (silent_rotation_hook::queue_attack), keeping the order Look(fake) ->
+	// Attack that Grim's PacketOrder check expects. CPS is drawn fresh from
+	// [min,max] after every hit so the interval is not a constant.
+	inline bool killaura_autoattack       = true;   // swing by itself
+	inline int  killaura_min_cps          = 8;
+	inline int  killaura_max_cps          = 12;
+	inline bool killaura_require_cooldown = true;    // only hit at full attack charge (1.9+)
+
 	// Move correction
 	// Disabled by default: with the current silent-rotation architecture
 	// (yaw only swapped inside sendMovementPackets, not throughout the
@@ -370,6 +380,16 @@ namespace globals
 	// reach is the normal case rather than a mistake.
 	inline float silent_aim_range = 4.5f;
 	inline float silent_aim_fov   = 180.0f;
+
+	// Auto-attack for silent aim. Silent aim only ROTATES onto a target; this
+	// makes it swing on its own too, so it works as a full aura without needing
+	// killaura enabled. Same queued-on-tick-thread attack path killaura uses,
+	// so the order stays Look(fake) -> Attack. Gated by a randomized CPS and
+	// (optionally) the vanilla attack cooldown, and only inside `range`.
+	inline bool  silent_aim_autoattack       = true;
+	inline int   silent_aim_min_cps          = 8;
+	inline int   silent_aim_max_cps          = 12;
+	inline bool  silent_aim_require_cooldown = true;
 
 	// Multipoint. Scans the whole target hitbox instead of the eleven points up
 	// its middle, and keeps the candidate needing the smallest turn. Resolution
@@ -472,8 +492,12 @@ namespace globals
 	// Rotation profile: 0 = Snap, 1 = Matrix, 2 = Polar (default), 3 = Linear
 	inline int  killaura_rotation_type = 2;
 
-	// Sprint bypass: 0 = None, 1 = MineBlaze, 2 = Grim, 3 = Legit
-	inline int  killaura_sprint_bypass = 0;
+	// Sprint bypass: 0 = None (off), anything else resets sprint before each hit
+	// (setSprinting(false) + an explicit STOP_SPRINTING packet ahead of the
+	// attack) so a falling hit lands as a crit instead of a sprint attack.
+	// Default Grim; the mode names are cosmetic for now (all non-None behave the
+	// same), a placeholder for per-anticheat timing later.
+	inline int  killaura_sprint_bypass = 2;
 
 	// Reach + FOV
 	inline float killaura_range = 4.5f;

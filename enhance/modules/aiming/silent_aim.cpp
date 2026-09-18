@@ -2,6 +2,7 @@
 #include "rotation.h"
 #include "../killaura/target_selector.h"
 #include "../killaura/aim_point.h"
+#include "../killaura/silent_rotation_hook.h"
 #include "multipoint.h"
 #include "tick_movement_hook.h"
 #include "../../utils/client_thread.h"
@@ -12,9 +13,12 @@
 
 #include <sdk/minecraft/minecraft.h>
 #include <sdk/minecraft/entity/entity.h>
+#include <sdk/minecraft/player/player.h>
 
 #include <atomic>
 #include <cstring>
+#include <cmath>
+#include <random>
 #include <windows.h>
 
 namespace
@@ -60,6 +64,48 @@ namespace
 	{
 		g_stamp_ms.store(0, std::memory_order_release);
 		g_dbg_has_target.store(false, std::memory_order_relaxed);
+	}
+
+	// --- auto-attack (worker thread) ---------------------------------------
+	std::mt19937 g_click_rng{ std::random_device{}() };
+	uint64_t     g_click_last_ms = 0;
+	int          g_click_delay_ms = 0;
+
+	int click_delay_ms()
+	{
+		int lo = globals::silent_aim_min_cps;
+		int hi = globals::silent_aim_max_cps;
+		if (lo < 1) lo = 1;
+		if (hi < lo) hi = lo;
+		std::uniform_int_distribution<int> d(lo, hi);
+		const int cps = d(g_click_rng);
+		return 1000 / (cps > 0 ? cps : 1);
+	}
+
+	// Bring silent_rotation_hook up so a queued attack can drain. Posted to the
+	// client thread (attaching from the worker needs can_suspend), same as
+	// triggerbot and killaura. init() resolves attackEntity before it installs
+	// the hook, so the attack still fires via tick_movement_hook even if the
+	// hook itself fails to attach.
+	bool click_ensure_hook()
+	{
+		static bool s_ok = false;
+		if (s_ok) return true;
+		static uint64_t s_next = 0;
+		const uint64_t now = GetTickCount64();
+		if (now < s_next) return false;
+		s_next = now + 2000;
+		enhance::client_thread::post([]() {
+			try { s_ok = enhance::modules::silent_rotation_hook::init(); } catch (...) {}
+		});
+		return s_ok;
+	}
+
+	void click_cancel()
+	{
+		enhance::modules::silent_rotation_hook::cancel_attack(
+			enhance::modules::silent_rotation_hook::attack_owner::killaura);
+		g_click_delay_ms = 0;
 	}
 }
 
@@ -191,6 +237,7 @@ void enhance::modules::aiming::silent_aim::run()
 
 	if (!target)
 	{
+		click_cancel();
 		env->DeleteLocalRef(world);
 		env->DeleteLocalRef(local_player);
 		publish_none();
@@ -264,9 +311,74 @@ void enhance::modules::aiming::silent_aim::run()
 		g_packed.store(pack(yaw, pitch), std::memory_order_release);
 		g_stamp_ms.store(GetTickCount64(), std::memory_order_release);
 		g_dbg_has_target.store(true, std::memory_order_relaxed);
+
+		// --- auto-attack ----------------------------------------------------
+		//
+		// Silent aim on its own only turns; this makes it swing too, so it is a
+		// full aura without needing killaura. Reached only when killaura is NOT
+		// publishing (run() returns early on g_external above), so the single
+		// pending-attack slot is never contended. Same tick-thread drain as
+		// killaura: the rotation was just published, so on the next tick the
+		// look packet carries it and the queued attack fires right after.
+		if (globals::silent_aim_autoattack)
+		{
+			click_ensure_hook();
+
+			const uint64_t now_ms = GetTickCount64();
+
+			float cooldown = 1.0f;
+			if (globals::silent_aim_require_cooldown)
+			{
+				player_client pc;
+				cooldown = pc.get_attack_cooldown_progress(0.5f);
+			}
+			const bool cooldown_ok = cooldown >= 1.0f;
+
+			if (g_click_delay_ms == 0)
+				g_click_delay_ms = click_delay_ms();
+
+			sdk::entity_client te(target);
+			const double ddx = te.get_x() - le.get_x();
+			const double ddy = te.get_y() - le.get_y();
+			const double ddz = te.get_z() - le.get_z();
+			const double target_dist = std::sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+			const bool in_range = target_dist <= static_cast<double>(globals::silent_aim_range);
+
+			const bool ready = enhance::modules::silent_rotation_hook::attack_ready();
+			const bool due = (g_click_last_ms == 0) ||
+			                 (now_ms - g_click_last_ms >= static_cast<uint64_t>(g_click_delay_ms));
+
+			const bool fire = ready && in_range && cooldown_ok && due;
+			if (fire)
+			{
+				enhance::modules::silent_rotation_hook::queue_attack(
+					target, enhance::modules::silent_rotation_hook::attack_owner::killaura);
+				g_click_last_ms = now_ms;
+				g_click_delay_ms = click_delay_ms();
+			}
+
+			if (globals::aiming_debug_log)
+			{
+				static uint64_t s_last = 0;
+				if (now_ms - s_last > 1000)
+				{
+					s_last = now_ms;
+					logger::log(std::string("[saim-click] fire=") + (fire ? "YES" : "no") +
+					            " hook=" + (ready ? "up" : "DOWN") +
+					            " dist=" + std::to_string(target_dist) +
+					            " range=" + std::to_string(globals::silent_aim_range) +
+					            " in_range=" + (in_range ? "1" : "0") +
+					            " cooldown=" + std::to_string(cooldown) +
+					            " cd_ok=" + (cooldown_ok ? "1" : "0") +
+					            " due=" + (due ? "1" : "0") +
+					            " delay=" + std::to_string(g_click_delay_ms));
+				}
+			}
+		}
 	}
 	else
 	{
+		click_cancel();
 		publish_none();
 	}
 

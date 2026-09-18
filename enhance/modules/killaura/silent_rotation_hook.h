@@ -37,6 +37,23 @@ namespace enhance::modules::silent_rotation_hook
 
 	void queue_attack(jobject target, attack_owner owner);
 
+	// Execute the queued attack (interactionManager.attackEntity) on `player`,
+	// on the JVM tick thread, if one is pending. Claims the pending slot with an
+	// atomic exchange, so calling it from more than one place in the same tick
+	// fires at most one swing. This hook calls it from sendMovementPackets;
+	// aiming::tick_movement_hook also calls it right after tick() returns, so a
+	// queued attack still fires even when only the tick hook is attached (this
+	// hook's own sendMovementPackets redefinition can fail to install when the
+	// class is already redefined, and then nothing here would drain it).
+	void fire_pending_attack(JNIEnv* env, jobject player);
+
+	// True once interactionManager.attackEntity is resolved, i.e. a queued
+	// attack can actually be executed. init() resolves it before it attaches the
+	// hook, so this can be true even when the sendMovementPackets hook failed to
+	// install -- which is fine, because tick_movement_hook drains the attack in
+	// that case. Callers gate on THIS, not on whether the hook attached.
+	bool attack_ready();
+
 	// Drop the pending attack only if `owner` is the one who queued it.
 	void cancel_attack(attack_owner owner);
 

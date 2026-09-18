@@ -2303,6 +2303,19 @@ static std::vector<ModuleEntry> build_modules() {
               Slider("Range", "Max target reach (blocks)", &globals::killaura_range, 1.0f, 6.0f, "%.2f");
               Slider("FOV",   "Field-of-view cone (deg). 360 = all-around.", &globals::killaura_fov, 60.0f, 360.0f, "%.0f");
 
+              // Clicker
+              Checkbox("Auto Attack", "Let killaura swing on its own. Off = silent rotation only.", &globals::killaura_autoattack);
+              if (globals::killaura_autoattack)
+              {
+                  float lo = static_cast<float>(globals::killaura_min_cps);
+                  float hi = static_cast<float>(globals::killaura_max_cps);
+                  Slider("Min CPS", "Lower bound of clicks/sec", &lo, 1.0f, 20.0f, "%.0f");
+                  Slider("Max CPS", "Upper bound of clicks/sec", &hi, 1.0f, 20.0f, "%.0f");
+                  globals::killaura_min_cps = static_cast<int>(lo);
+                  globals::killaura_max_cps = static_cast<int>(hi);
+                  Checkbox("Require Cooldown", "Only hit at full attack charge (1.9+ cooldown) so swings carry full damage.", &globals::killaura_require_cooldown);
+              }
+
               // Debug overlay
               Checkbox("Debug overlay", "Top-left status text showing whether killaura found a target this tick", &globals::killaura_debug_overlay);
 
