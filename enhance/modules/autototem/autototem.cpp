@@ -44,7 +44,7 @@ bool enhance::modules::autototem::has_totem_in_offhand(jobject player)
 	// Try using mappings first
 	jobject offhand_stack = nullptr;
 	
-	if (sdk::mappings::inventory_offhand_name && sdk::mappings::inventory_offhand_sig)
+	if (sdk::mappings::have(sdk::mappings::inventory_offhand_name) && sdk::mappings::have(sdk::mappings::inventory_offhand_sig))
 	{
 		jfieldID offhand_fid = env->GetFieldID(inventory_class, sdk::mappings::inventory_offhand_name, sdk::mappings::inventory_offhand_sig);
 		if (env->ExceptionCheck()) env->ExceptionClear();
@@ -446,7 +446,7 @@ jobject enhance::modules::autototem::get_block_pos_origin()
 	
 	// Get BlockPos.ORIGIN static field using mappings
 	jclass block_pos_class = nullptr;
-	if (sdk::mappings::block_pos_class_sig)
+	if (sdk::mappings::have(sdk::mappings::block_pos_class_sig))
 	{
 		block_pos_class = sdk::classloader::find_class(env, sdk::mappings::block_pos_class_sig);
 		if (env->ExceptionCheck()) env->ExceptionClear();
@@ -456,7 +456,7 @@ jobject enhance::modules::autototem::get_block_pos_origin()
 	
 	// Try ORIGIN static field using mappings
 	jfieldID origin_fid = nullptr;
-	if (sdk::mappings::block_pos_origin_name && sdk::mappings::block_pos_origin_sig)
+	if (sdk::mappings::have(sdk::mappings::block_pos_origin_name) && sdk::mappings::have(sdk::mappings::block_pos_origin_sig))
 	{
 		origin_fid = env->GetStaticFieldID(block_pos_class, sdk::mappings::block_pos_origin_name, sdk::mappings::block_pos_origin_sig);
 		if (env->ExceptionCheck()) env->ExceptionClear();
@@ -486,7 +486,7 @@ void enhance::modules::autototem::send_update_selected_slot_packet(int slot)
 	
 	// Find UpdateSelectedSlotC2SPacket class using mappings
 	jclass packet_class = nullptr;
-	if (sdk::mappings::update_selected_slot_c2s_packet_class_sig)
+	if (sdk::mappings::have(sdk::mappings::update_selected_slot_c2s_packet_class_sig))
 	{
 		packet_class = sdk::classloader::find_class(env, sdk::mappings::update_selected_slot_c2s_packet_class_sig);
 		if (env->ExceptionCheck()) env->ExceptionClear();
@@ -531,7 +531,7 @@ void enhance::modules::autototem::send_update_selected_slot_packet(int slot)
 	}
 	
 	jmethodID send_packet_mid = nullptr;
-	if (sdk::mappings::send_packet_name && sdk::mappings::send_packet_sig)
+	if (sdk::mappings::have(sdk::mappings::send_packet_name) && sdk::mappings::have(sdk::mappings::send_packet_sig))
 	{
 		send_packet_mid = env->GetMethodID(handler_class, sdk::mappings::send_packet_name, sdk::mappings::send_packet_sig);
 		if (env->ExceptionCheck()) env->ExceptionClear();
@@ -556,7 +556,7 @@ void enhance::modules::autototem::send_player_action_packet(jobject block_pos, i
 	
 	// Find PlayerActionC2SPacket class using mappings
 	jclass packet_class = nullptr;
-	if (sdk::mappings::player_action_c2s_packet_class_sig)
+	if (sdk::mappings::have(sdk::mappings::player_action_c2s_packet_class_sig))
 	{
 		packet_class = sdk::classloader::find_class(env, sdk::mappings::player_action_c2s_packet_class_sig);
 		if (env->ExceptionCheck()) env->ExceptionClear();
@@ -570,7 +570,7 @@ void enhance::modules::autototem::send_player_action_packet(jobject block_pos, i
 	
 	// Find Action enum class using mappings
 	jclass action_class = nullptr;
-	if (sdk::mappings::player_action_c2s_packet_action_class_sig)
+	if (sdk::mappings::have(sdk::mappings::player_action_c2s_packet_action_class_sig))
 	{
 		action_class = sdk::classloader::find_class(env, sdk::mappings::player_action_c2s_packet_action_class_sig);
 		if (env->ExceptionCheck()) env->ExceptionClear();
@@ -585,7 +585,7 @@ void enhance::modules::autototem::send_player_action_packet(jobject block_pos, i
 	
 	// Get SWAP_ITEM_WITH_OFFHAND action using mappings
 	jobject action_enum = nullptr;
-	if (sdk::mappings::swap_item_with_offhand_action_name && sdk::mappings::swap_item_with_offhand_action_sig)
+	if (sdk::mappings::have(sdk::mappings::swap_item_with_offhand_action_name) && sdk::mappings::have(sdk::mappings::swap_item_with_offhand_action_sig))
 	{
 		jfieldID swap_action_fid = env->GetStaticFieldID(action_class, sdk::mappings::swap_item_with_offhand_action_name, sdk::mappings::swap_item_with_offhand_action_sig);
 		if (env->ExceptionCheck()) env->ExceptionClear();
@@ -600,7 +600,7 @@ void enhance::modules::autototem::send_player_action_packet(jobject block_pos, i
 	// Get Direction.DOWN using mappings
 	jclass direction_class = nullptr;
 	jobject direction_enum = nullptr;
-	if (sdk::mappings::direction_class_sig && sdk::mappings::direction_down_name && sdk::mappings::direction_down_sig)
+	if (sdk::mappings::have(sdk::mappings::direction_class_sig) && sdk::mappings::have(sdk::mappings::direction_down_name) && sdk::mappings::have(sdk::mappings::direction_down_sig))
 	{
 		direction_class = sdk::classloader::find_class(env, sdk::mappings::direction_class_sig);
 		if (env->ExceptionCheck()) env->ExceptionClear();
@@ -631,9 +631,9 @@ void enhance::modules::autototem::send_player_action_packet(jobject block_pos, i
 	
 	// Find constructor: PlayerActionC2SPacket(Action action, BlockPos pos, Direction direction)
 	// Construct signature from mappings - all must be available
-	if (!sdk::mappings::player_action_c2s_packet_action_class_sig || 
-	    !sdk::mappings::block_pos_class_sig || 
-	    !sdk::mappings::direction_class_sig)
+	if (!sdk::mappings::have(sdk::mappings::player_action_c2s_packet_action_class_sig) || 
+	    !sdk::mappings::have(sdk::mappings::block_pos_class_sig) || 
+	    !sdk::mappings::have(sdk::mappings::direction_class_sig))
 	{
 		env->DeleteLocalRef(action_enum);
 		env->DeleteLocalRef(direction_enum);
@@ -690,7 +690,7 @@ void enhance::modules::autototem::send_player_action_packet(jobject block_pos, i
 	}
 	
 	jmethodID send_packet_mid = nullptr;
-	if (sdk::mappings::send_packet_name && sdk::mappings::send_packet_sig)
+	if (sdk::mappings::have(sdk::mappings::send_packet_name) && sdk::mappings::have(sdk::mappings::send_packet_sig))
 	{
 		send_packet_mid = env->GetMethodID(handler_class, sdk::mappings::send_packet_name, sdk::mappings::send_packet_sig);
 		if (env->ExceptionCheck()) env->ExceptionClear();

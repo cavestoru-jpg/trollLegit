@@ -1087,7 +1087,7 @@ bool enhance::modules::triggerbot::is_entity_hit_result(jobject hit_result)
 		return false;
 
 	// Use mappings from mappings.hpp
-	if (sdk::mappings::entity_hit_result_class_sig)
+	if (sdk::mappings::have(sdk::mappings::entity_hit_result_class_sig))
 	{
 		jclass entity_hit_result_class = sdk::classloader::find_class(env, sdk::mappings::entity_hit_result_class_sig);
 		if (entity_hit_result_class)
@@ -1112,7 +1112,7 @@ jobject enhance::modules::triggerbot::get_entity_from_hit_result(jobject hit_res
 		return nullptr;
 
 	// Use mappings from mappings.hpp
-	if (sdk::mappings::entity_hit_result_class_sig && sdk::mappings::entity_hit_result_get_entity_name && sdk::mappings::entity_hit_result_get_entity_sig)
+	if (sdk::mappings::have(sdk::mappings::entity_hit_result_class_sig) && sdk::mappings::have(sdk::mappings::entity_hit_result_get_entity_name) && sdk::mappings::have(sdk::mappings::entity_hit_result_get_entity_sig))
 	{
 		jclass hit_result_class = sdk::classloader::find_class(env, sdk::mappings::entity_hit_result_class_sig);
 	if (!hit_result_class) 

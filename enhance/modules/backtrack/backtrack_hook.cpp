@@ -424,9 +424,9 @@ bool enhance::modules::backtrack_hook::init()
 	logger::log_debug("[BacktrackHook] Got env and jvm");
 	
 	// Ensure mappings are loaded
-	if (!sdk::mappings::channel_inbound_handler_adapter_class_sig ||
-	    !sdk::mappings::channel_read0_name ||
-	    !sdk::mappings::channel_read0_sig)
+	if (!sdk::mappings::have(sdk::mappings::channel_inbound_handler_adapter_class_sig) ||
+	    !sdk::mappings::have(sdk::mappings::channel_read0_name) ||
+	    !sdk::mappings::have(sdk::mappings::channel_read0_sig))
 	{
 		logger::log_error("[BacktrackHook] init() failed: Mappings not loaded");
 		return false;
@@ -543,7 +543,7 @@ bool enhance::modules::backtrack_hook::init()
 	logger::log_debug("[BacktrackHook] Caching packet classes");
 	
 	// EntityPositionS2CPacket (most common)
-	if (sdk::mappings::entity_position_s2c_packet_class_sig)
+	if (sdk::mappings::have(sdk::mappings::entity_position_s2c_packet_class_sig))
 	{
 		jclass cls = sdk::classloader::find_class(env, sdk::mappings::entity_position_s2c_packet_class_sig);
 		if (cls)
@@ -559,7 +559,7 @@ bool enhance::modules::backtrack_hook::init()
 	}
 	
 	// EntityMoveS2CPacket
-	if (sdk::mappings::entity_move_s2c_packet_class_sig)
+	if (sdk::mappings::have(sdk::mappings::entity_move_s2c_packet_class_sig))
 	{
 		jclass cls = sdk::classloader::find_class(env, sdk::mappings::entity_move_s2c_packet_class_sig);
 		if (cls)
@@ -571,7 +571,7 @@ bool enhance::modules::backtrack_hook::init()
 	}
 	
 	// EntityTeleportS2CPacket
-	if (sdk::mappings::entity_teleport_s2c_packet_class_sig)
+	if (sdk::mappings::have(sdk::mappings::entity_teleport_s2c_packet_class_sig))
 	{
 		jclass cls = sdk::classloader::find_class(env, sdk::mappings::entity_teleport_s2c_packet_class_sig);
 		if (cls)
@@ -583,7 +583,7 @@ bool enhance::modules::backtrack_hook::init()
 	}
 	
 	// EntityS2CPacket (parent class)
-	if (sdk::mappings::entity_s2c_packet_class_sig)
+	if (sdk::mappings::have(sdk::mappings::entity_s2c_packet_class_sig))
 	{
 		jclass cls = sdk::classloader::find_class(env, sdk::mappings::entity_s2c_packet_class_sig);
 		if (cls)

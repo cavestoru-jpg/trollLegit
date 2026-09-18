@@ -278,7 +278,13 @@ double sdk::entity_client::get_fall_distance()
 		return 0.0;
 	}
 
-	jdouble ret = env->GetDoubleField(entity, fid);
+	// fallDistance was a float until 1.21.5 and is a double from 1.21.5 on. The
+	// descriptor the symbol bound to says which, so the accessor follows it rather
+	// than a version number -- reading a float field with GetDoubleField does not
+	// fail, it just returns garbage.
+	const bool is_float = sdk::mappings::entity_fall_distance_sig[0] == 'F';
+	jdouble ret = is_float ? (jdouble)env->GetFloatField(entity, fid)
+	                       : env->GetDoubleField(entity, fid);
 	if (env->ExceptionCheck()) env->ExceptionClear();
 	env->DeleteLocalRef(entity_class);
 

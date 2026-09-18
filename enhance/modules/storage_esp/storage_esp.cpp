@@ -200,7 +200,7 @@ void enhance::modules::storage_esp::run()
 		
 		// World.getBlockState(BlockPos) -> BlockState
 		jmethodID get_block_state_mid = nullptr;
-		if (sdk::mappings::world_get_block_state_name && sdk::mappings::world_get_block_state_sig)
+		if (sdk::mappings::have(sdk::mappings::world_get_block_state_name) && sdk::mappings::have(sdk::mappings::world_get_block_state_sig))
 		{
 			get_block_state_mid = env->GetMethodID(world_class, sdk::mappings::world_get_block_state_name, sdk::mappings::world_get_block_state_sig);
 			if (env->ExceptionCheck()) env->ExceptionClear();
@@ -225,7 +225,7 @@ void enhance::modules::storage_esp::run()
 		jmethodID get_block_mid = nullptr;
 		
 		// Try using mappings first
-		if (sdk::mappings::block_state_class_sig)
+		if (sdk::mappings::have(sdk::mappings::block_state_class_sig))
 		{
 			block_state_class = sdk::classloader::find_class(env, sdk::mappings::block_state_class_sig);
 		}
@@ -238,7 +238,7 @@ void enhance::modules::storage_esp::run()
 		
 		if (block_state_class)
 		{
-			if (sdk::mappings::block_state_get_block_name && sdk::mappings::block_state_get_block_sig)
+			if (sdk::mappings::have(sdk::mappings::block_state_get_block_name) && sdk::mappings::have(sdk::mappings::block_state_get_block_sig))
 			{
 				get_block_mid = env->GetMethodID(block_state_class, sdk::mappings::block_state_get_block_name, sdk::mappings::block_state_get_block_sig);
 				if (env->ExceptionCheck()) env->ExceptionClear();

@@ -2,6 +2,8 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #endif
 #include <imgui.h>
+#include <sdk/version/version.h>
+#include <sdk/mappings/mappings.hpp>
 #include "../../modules/aiming/silent_aim.h"
 #include "../../modules/killaura/killaura.h"
 #include <imgui_internal.h>
@@ -107,6 +109,20 @@ void draw_killaura( float width ) {
 		w.combo( xorstr_( "Sort##ka" ), &globals::killaura_sort_mode,
 		         { xorstr_( "Distance" ), xorstr_( "Health" ), xorstr_( "FOV" ), xorstr_( "Hurt time" ) } );
 
+		// Clicker
+		w.checkbox( xorstr_( "Auto attack##ka" ), &globals::killaura_autoattack );
+		if ( globals::killaura_autoattack )
+		{
+			w.slider_int( xorstr_( "Min CPS##ka" ), &globals::killaura_min_cps, 1, 20, "%d" );
+			w.slider_int( xorstr_( "Max CPS##ka" ), &globals::killaura_max_cps, 1, 20, "%d" );
+			w.checkbox( xorstr_( "Require cooldown##ka" ), &globals::killaura_require_cooldown );
+		}
+
+		// Sprint reset for crits: None = off, anything else stops sprint (with an
+		// explicit STOP_SPRINTING packet) before each hit.
+		w.combo( xorstr_( "Sprint bypass##ka" ), &globals::killaura_sprint_bypass,
+		         { xorstr_( "None" ), xorstr_( "MineBlaze" ), xorstr_( "Grim" ), xorstr_( "Legit" ) } );
+
 		const auto d = enhance::modules::killaura::debug_state( );
 		if ( !d.active )
 			TextColored( ImVec4{ 0.65f, 0.65f, 0.65f, 1.f }, "idle (%s)", d.blocked_by );
@@ -207,6 +223,13 @@ void page_combat_aim( ) {
 					widgets_manager::get( ).slider_int( xorstr_( "Resolution##saimres" ), &globals::silent_aim_resolution, 2, 9, "%d" );
 					widgets_manager::get( ).combo( xorstr_( "Point##saimpm" ), &globals::silent_aim_point_mode,
 					                               { xorstr_( "Center" ), xorstr_( "Least turn" ) } );
+				}
+				widgets_manager::get( ).checkbox( xorstr_( "Auto attack##saimaa" ), &globals::silent_aim_autoattack );
+				if ( globals::silent_aim_autoattack )
+				{
+					widgets_manager::get( ).slider_int( xorstr_( "Min CPS##saimmincps" ), &globals::silent_aim_min_cps, 1, 20, "%d" );
+					widgets_manager::get( ).slider_int( xorstr_( "Max CPS##saimmaxcps" ), &globals::silent_aim_max_cps, 1, 20, "%d" );
+					widgets_manager::get( ).checkbox( xorstr_( "Require cooldown##saimcd" ), &globals::silent_aim_require_cooldown );
 				}
 			} );
 			if ( globals::silent_aim_enabled )
@@ -685,6 +708,32 @@ void page_settings( ) {
 		{
 			TextDisabled( xorstr_( "enhance client" ) );
 			TextDisabled( xorstr_( "Right Shift toggles this menu by default." ) );
+
+			// What the client thinks it is attached to. "It does nothing" and "it
+			// bound to the wrong table" look identical from the outside, so the
+			// detection result belongs on screen, not only in the log.
+			Spacing( );
+			const int missing = ( int )sdk::mappings::unresolved( ).size( );
+			const int total = sdk::mappings::symbol_count( );
+			if ( !sdk::mappings::bound( ) )
+			{
+				TextColored( ImVec4( 1.f, .35f, .35f, 1.f ),
+					xorstr_( "mappings not bound - nothing will work" ) );
+			}
+			else
+			{
+				Text( xorstr_( "Minecraft %s" ), sdk::version::name( ) );
+				TextDisabled( xorstr_( "%s names, %d/%d symbols resolved" ),
+					sdk::version::ns_name( ), total - missing, total );
+				if ( !sdk::version::exact( ) )
+				{
+					TextColored( ImVec4( 1.f, .75f, .3f, 1.f ),
+						xorstr_( "reported %s - using the %s table" ),
+						sdk::version::reported( ), sdk::version::name( ) );
+				}
+				if ( missing > 0 && IsItemHovered( ) )
+					SetTooltip( xorstr_( "%d symbols this version does not have; see the log" ), missing );
+			}
 		}
 		cm.end_child( );
 	}

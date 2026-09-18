@@ -224,7 +224,7 @@ bool sdk::minecraft_client::do_attack()
 		if (!minecraft_class || !minecraft) return nullptr;
 
 		// Try getNetworkHandler() method first if mapping exists
-		if (sdk::mappings::network_handler_name && sdk::mappings::network_handler_sig)
+		if (sdk::mappings::have(sdk::mappings::network_handler_name) && sdk::mappings::have(sdk::mappings::network_handler_sig))
 		{
 			jmethodID mid = env->GetMethodID(minecraft_class, sdk::mappings::network_handler_name, sdk::mappings::network_handler_sig);
 			if (env->ExceptionCheck()) env->ExceptionClear();
@@ -241,7 +241,7 @@ bool sdk::minecraft_client::do_attack()
 		
 		// Try connection field if mapping exists
 		jfieldID fid = nullptr;
-		if (sdk::mappings::connection_name && sdk::mappings::connection_sig)
+		if (sdk::mappings::have(sdk::mappings::connection_name) && sdk::mappings::have(sdk::mappings::connection_sig))
 		{
 			fid = env->GetFieldID(minecraft_class, sdk::mappings::connection_name, sdk::mappings::connection_sig);
 			if (env->ExceptionCheck()) env->ExceptionClear();

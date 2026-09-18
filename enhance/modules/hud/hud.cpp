@@ -3,6 +3,7 @@
 #include "../../globals/globals.h"
 #include "../../gui/GUI.h"
 #include <sdk/includes.h>
+#include <sdk/version/version.h>
 #include <sdk/minecraft/minecraft.h>
 #include <sdk/minecraft/player/player.h>
 #include <vector>
@@ -119,7 +120,13 @@ void render_watermark()
 	ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
 	if (!draw_list) return;
 
-	const char* text = "enhance v1.21.11";
+	// The version is whatever the client landed in, not whatever it was built
+	// against -- a watermark that lies about the version is worse than none when
+	// the same DLL now runs on everything from 1.20 to 26.3.
+	static std::string watermark;
+	if (watermark.empty() || watermark.find(sdk::version::name()) == std::string::npos)
+		watermark = std::string("enhance \xc2\xb7 ") + sdk::version::name();
+	const char* text = watermark.c_str();
 	ImFont* font = GetFont(14.0f);
 	ImVec2 text_size = ImGui::CalcTextSize(text);
 	const ImVec2 size(text_size.x + 16, text_size.y + 8);

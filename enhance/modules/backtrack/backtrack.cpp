@@ -170,7 +170,7 @@ static int get_hurt_time(jobject entity)
 	if (!entity) return 999;
 	
 	// Check if mappings are available
-	if (!sdk::mappings::living_entity_hurt_time_name || !sdk::mappings::living_entity_hurt_time_sig)
+	if (!sdk::mappings::have(sdk::mappings::living_entity_hurt_time_name) || !sdk::mappings::have(sdk::mappings::living_entity_hurt_time_sig))
 	{
 		return 999; // Mappings not loaded yet
 	}
