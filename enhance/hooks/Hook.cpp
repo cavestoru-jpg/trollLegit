@@ -5,6 +5,7 @@
 #include <jnihook.h>
 #include "../gui/GUI.h"
 #include "../globals/globals.h"
+#include "../utils/logger.h"
 
 #include <atomic>
 
@@ -39,6 +40,51 @@ struct hook_guard
 static LRESULT __stdcall WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static bool __stdcall wglSwapBuffers(HDC hDc);
 
+// The game's own top-level window, found by process rather than by class name.
+//
+// FindWindowA("LWJGL") searched EVERY process, which was wrong twice over. With
+// two Minecraft versions open it subclassed whichever window Windows listed
+// first -- possibly the other game's -- and on 26.3 it found nothing at all,
+// because that version dropped GLFW for SDL and its window class is "SDL_app".
+// The class name is not ours to predict; the process id is.
+//
+// Skips the invisible helpers every backend leaves lying around (the RenderPearl
+// utility window, the wgl dummy, IME windows) by requiring a visible window with
+// a title and a real size.
+static HWND find_own_window()
+{
+	struct search
+	{
+		DWORD pid;
+		HWND  best;
+	} state{ GetCurrentProcessId(), nullptr };
+
+	EnumWindows([](HWND hwnd, LPARAM param) -> BOOL
+	{
+		auto* st = reinterpret_cast<search*>(param);
+
+		DWORD pid = 0;
+		GetWindowThreadProcessId(hwnd, &pid);
+		if (pid != st->pid || !IsWindowVisible(hwnd))
+			return TRUE;
+
+		if (GetWindow(hwnd, GW_OWNER) != nullptr)
+			return TRUE;                      // a dialog or tool window
+
+		if (GetWindowTextLengthA(hwnd) == 0)
+			return TRUE;
+
+		RECT rc{};
+		if (!GetWindowRect(hwnd, &rc) || (rc.right - rc.left) < 200 || (rc.bottom - rc.top) < 200)
+			return TRUE;
+
+		st->best = hwnd;
+		return FALSE;
+	}, reinterpret_cast<LPARAM>(&state));
+
+	return state.best;
+}
+
 bool Hook::init()
 {
 	if (is_init)
@@ -63,16 +109,21 @@ bool Hook::init()
 	}
 
 	{
-		wnd_handle = FindWindowA("LWJGL", nullptr);
+		wnd_handle = find_own_window();
+
+		// Falls back to the old class-name search only when the process has no
+		// window yet -- injecting during startup, before the game creates one.
+		if (!wnd_handle)
+		{
+			wnd_handle = FindWindowA("LWJGL", nullptr);
+			if (!wnd_handle)
+				wnd_handle = FindWindowA("GLFW30", nullptr);
+		}
 
 		if (!wnd_handle)
 		{
-			wnd_handle = FindWindowA("GLFW30", nullptr);
-
-			if (!wnd_handle)
-			{
-				return true;
-			}
+			logger::log_error("[hook] no window for this process yet -- inject once the game is drawing");
+			return true;
 		}
 
 		WNDPROC current_proc = (WNDPROC)GetWindowLongPtrW(wnd_handle, GWLP_WNDPROC);
