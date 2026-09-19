@@ -160,7 +160,22 @@ namespace
 		{
 			const auto a = enhance::modules::aiming::silent_aim::current();
 			if (a.active)
+			{
+				// Throttled: the swap lines show this angle swinging a hundred
+				// degrees between ticks, and whether that is the aim source or the
+				// plumbing decides which half of the client to look at.
+				static ULONGLONG s_next = 0;
+				const ULONGLONG now = GetTickCount64();
+				if (now >= s_next)
+				{
+					s_next = now + 1000;
+					char line[160];
+					sprintf_s(line, sizeof(line),
+						"[silent] angle from aim: yaw %.1f pitch %.1f", a.yaw, a.pitch);
+					logger::log(line);
+				}
 				return { true, a.yaw, a.pitch };
+			}
 			// Deliberately falls through rather than returning inactive: with
 			// no target the player should keep their own aim, not snap to a
 			// stale one.
@@ -174,6 +189,10 @@ namespace
 			s.pitch = env->CallFloatMethod(player, g_mid_get_pitch);
 			if (env->ExceptionCheck()) { env->ExceptionClear(); return {}; }
 			s.yaw += globals::silent_rotation_offset;
+			// The other source: a fixed offset on the player's own yaw. Steady by
+			// construction, so if the view still shakes with ONLY this active, the
+			// problem is not the aim.
+
 			s.active = true;
 			return s;
 		}
@@ -438,6 +457,23 @@ static jmethodID ORIG_input_tick = nullptr, g_mid_input_tick = nullptr;
 static jclass    g_input_class = nullptr;
 static bool      g_input_detached_ok = true;
 
+// Proof the callback runs at all, independent of what it then decides. The
+// hook attaching and the hook firing are different claims, and only one of
+// them was being made.
+static void note_input_hook_alive()
+{
+	static ULONGLONG s_next = 0;
+	const ULONGLONG now = GetTickCount64();
+	if (now < s_next)
+		return;
+	s_next = now + 2000;
+
+	char line[128];
+	sprintf_s(line, sizeof(line), "[silent] input hook alive, move correction=%d",
+		globals::aiming_movement_correction);
+	logger::log(line);
+}
+
 static void rotate_input_for_silent(JNIEnv* env)
 {
 	// Throttled so a per-tick line does not bury the log, but present for every
@@ -542,6 +578,8 @@ static void rotate_input_for_silent(JNIEnv* env)
 // 1.21.4+: ClientInput.tick()
 static void hkInputTick(JNIEnv* env, jobject thiz)
 {
+	note_input_hook_alive();
+
 	if (ORIG_input_tick && g_input_class && thiz)
 	{
 		env->CallNonvirtualVoidMethod(thiz, g_input_class, ORIG_input_tick);
@@ -553,6 +591,8 @@ static void hkInputTick(JNIEnv* env, jobject thiz)
 // 1.20 - 1.21.3: tick(boolean slowDown, float slowdownFactor)
 static void hkInputTickSlowdown(JNIEnv* env, jobject thiz, jboolean slow, jfloat factor)
 {
+	note_input_hook_alive();
+
 	if (ORIG_input_tick && g_input_class && thiz)
 	{
 		env->CallNonvirtualVoidMethod(thiz, g_input_class, ORIG_input_tick, slow, factor);
