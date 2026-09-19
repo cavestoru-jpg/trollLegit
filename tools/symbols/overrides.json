@@ -959,5 +959,111 @@
     "emit_name": "pose_stack_translate_name",
     "emit_sig": "pose_stack_translate_sig",
     "why": "move to the tag's anchor. Doubles, because a world coordinate far from spawn does not survive a float"
+  },
+  "native_image_class": {
+    "new": true,
+    "kind": "class",
+    "class": "com/mojang/blaze3d/platform/NativeImage",
+    "emit_sig": "native_image_class_sig",
+    "resolve_from": "26.1",
+    "why": "restoring the client's own name tags on the submit path. They are textured quads against our glyph atlas, so the game has to own that texture before it can draw them -- the vanilla tag renderer draws a string and loses the panel, the health bar and the friend colouring"
+  },
+  "native_image_init": {
+    "new": true,
+    "kind": "method",
+    "owner": "com/mojang/blaze3d/platform/NativeImage",
+    "name": "<init>",
+    "desc": "(IIZ)V",
+    "emit_name": "native_image_init_name",
+    "emit_sig": "native_image_init_sig",
+    "resolve_from": "26.1",
+    "why": "an empty image of our atlas's size, to be filled through its own pointer"
+  },
+  "native_image_pointer": {
+    "new": true,
+    "kind": "method",
+    "owner": "com/mojang/blaze3d/platform/NativeImage",
+    "name": "getPointer",
+    "desc": "()J",
+    "emit_name": "native_image_pointer_name",
+    "emit_sig": "native_image_pointer_sig",
+    "resolve_from": "26.1",
+    "why": "the raw pixels. One memcpy of the atlas rather than a million setPixel calls"
+  },
+  "dynamic_texture_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/client/renderer/texture/DynamicTexture",
+    "emit_sig": "dynamic_texture_class_sig",
+    "resolve_from": "26.1",
+    "why": "wraps a NativeImage as something the texture manager will take"
+  },
+  "dynamic_texture_init": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/client/renderer/texture/DynamicTexture",
+    "name": "<init>",
+    "desc": "(Ljava/util/function/Supplier;Lcom/mojang/blaze3d/platform/NativeImage;)V",
+    "emit_name": "dynamic_texture_init_name",
+    "emit_sig": "dynamic_texture_init_sig",
+    "resolve_from": "26.1",
+    "why": "the label supplier is only used for debug names"
+  },
+  "texture_manager_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/client/renderer/texture/TextureManager",
+    "emit_sig": "texture_manager_class_sig",
+    "resolve_from": "26.1",
+    "why": "restoring the client's own name tags on the submit path. They are textured quads against our glyph atlas, so the game has to own that texture before it can draw them -- the vanilla tag renderer draws a string and loses the panel, the health bar and the friend colouring"
+  },
+  "texture_manager_register": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/client/renderer/texture/TextureManager",
+    "name": "register",
+    "desc": "(Lnet/minecraft/resources/Identifier;Lnet/minecraft/client/renderer/texture/AbstractTexture;)V",
+    "emit_name": "texture_manager_register_name",
+    "emit_sig": "texture_manager_register_sig",
+    "resolve_from": "26.1",
+    "why": "gives the atlas an Identifier a render type can name"
+  },
+  "minecraft_texture_manager": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/client/Minecraft",
+    "name": "getTextureManager",
+    "desc": "()Lnet/minecraft/client/renderer/texture/TextureManager;",
+    "emit_name": "minecraft_texture_manager_name",
+    "emit_sig": "minecraft_texture_manager_sig",
+    "why": "where the texture manager lives"
+  },
+  "identifier_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/resources/Identifier",
+    "emit_sig": "identifier_class_sig",
+    "why": "names the registered atlas"
+  },
+  "identifier_of": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/resources/Identifier",
+    "name": "fromNamespaceAndPath",
+    "desc": "(Ljava/lang/String;Ljava/lang/String;)Lnet/minecraft/resources/Identifier;",
+    "emit_name": "identifier_of_name",
+    "emit_sig": "identifier_of_sig",
+    "why": "the factory rather than the constructor, which validates the same way"
+  },
+  "render_type_text_see_through": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/client/renderer/rendertype/RenderTypes",
+    "name": "textSeeThrough",
+    "desc": "(Lnet/minecraft/resources/Identifier;)Lnet/minecraft/client/renderer/rendertype/RenderType;",
+    "emit_name": "render_type_text_see_through_name",
+    "emit_sig": "render_type_text_see_through_sig",
+    "resolve_from": "1.21.11",
+    "why": "textured and visible through walls, which is what a name tag on an ESP wants"
   }
 }
