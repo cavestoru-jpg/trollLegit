@@ -208,13 +208,21 @@ namespace
 	// bound to our glyph atlas. Falls back to the game's tag renderer if the
 	// atlas cannot be handed over.
 	jclass    g_cgr_cls = nullptr;              // GlobalRef
+	bool      g_atlas_tried = false;
+
+	jmethodID g_renderer_render_text = nullptr;
+
+	// Which render type each half ends up drawn with, and what it wants per
+	// vertex. Declared here because submit_boxes reads them.
+	bool      g_tris_as_quads = false;
+	int       g_mask_tris = 0;
+	int       g_mask_lines = 0;
+	jmethodID g_mid_set_masks = nullptr;
+	jmethodID g_mid_set_quads = nullptr;
 	jobject   g_rt_text = nullptr;              // GlobalRef
 	jobject   g_proxy_text = nullptr;           // GlobalRef
 	int       g_mask_text = 0;
 	bool      g_text_as_quads = false;
-	bool      g_atlas_tried = false;
-
-	jmethodID g_renderer_render_text = nullptr;
 	jmethodID g_renderer_upload_font = nullptr;
 	bool      g_font_uploaded = false;
 
@@ -1370,6 +1378,15 @@ namespace
 			return false;
 		}
 
+		// The atlas's white pixel, so a quad with no texture of its own still
+		// comes out solid through a textured render type.
+		if (jmethodID set_white = env->GetStaticMethodID(g_renderer_class, "setWhiteUv", "(FF)V"))
+		{
+			const ImVec2 white = atlas->TexUvWhitePixel;
+			env->CallStaticVoidMethod(g_renderer_class, set_white, white.x, white.y);
+		}
+		clear_exception(env);
+
 		logger::log("[world_render] the glyph atlas is a game texture now -- name tags are "
 		            "the client's own again, panel and all (topology " +
 		            (topo.empty() ? "unknown" : topo) + ")");
@@ -1422,6 +1439,20 @@ namespace
 					env->CallVoidMethod(ordered, g_mid_submit_custom,
 					                    g_frame_pose, g_rt_text, g_proxy_text);
 					report_exception(env, "submitCustomGeometry(text)");
+
+					// Numbers rather than another guess about why nothing shows.
+					static ULONGLONG s_next = 0;
+					const ULONGLONG now = GetTickCount64();
+					if (now >= s_next)
+					{
+						s_next = now + 3000;
+						char line[192];
+						sprintf_s(line, sizeof(line),
+						          "[world_render] text submitted: %zu verts mask=%d quads=%d",
+						          g_text.size() / k_floats_per_text_vertex, g_mask_text,
+						          (int)g_text_as_quads);
+						logger::log(line);
+					}
 
 					env->DeleteLocalRef(ordered);
 					env->DeleteLocalRef(camera);
@@ -1522,10 +1553,30 @@ namespace
 			if (!ordered)
 				return;
 
-			if (!g_tris.empty() && g_rt_tris)
+			// Through walls means through the depth test, and nothing in the game's
+			// plain geometry types skips it -- but the text type does, and it is
+			// already bound to our atlas. Pointing the boxes at the atlas's white
+			// pixel makes it a solid-colour type, which is all they need.
+			jobject rt_fill = g_rt_tris;
+			int     fill_mask = g_mask_tris;
+			bool    fill_quads = g_tris_as_quads;
+			if (globals::esp_world_through_walls && g_rt_text)
 			{
+				rt_fill = g_rt_text;
+				fill_mask = g_mask_text;
+				fill_quads = g_text_as_quads;
+			}
+
+			if (!g_tris.empty() && rt_fill)
+			{
+				env->CallStaticVoidMethod(g_renderer_class, g_mid_set_masks,
+				                          (jint)fill_mask, (jint)g_mask_lines);
+				env->CallStaticVoidMethod(g_renderer_class, g_mid_set_quads,
+				                          fill_quads ? JNI_TRUE : JNI_FALSE);
+				clear_exception(env);
+
 				env->CallVoidMethod(ordered, g_mid_submit_custom,
-				                    g_frame_pose, g_rt_tris, g_proxy_tris);
+				                    g_frame_pose, rt_fill, g_proxy_tris);
 				report_exception(env, "submitCustomGeometry(tris)");
 			}
 			if (!g_lines.empty() && g_rt_lines)
@@ -1682,7 +1733,6 @@ namespace
 	bool      g_submit_pending = false;
 	// Set when the filled half is drawn through a QUADS topology, where each
 	// triangle goes out as four vertices with the last one repeated.
-	bool      g_tris_as_quads = false;
 	jclass    g_level_renderer_cls = nullptr;    // GlobalRef
 
 	// LevelRenderer.submitEntities. The frame is taking entity geometry and is
@@ -2217,6 +2267,9 @@ namespace
 
 		jmethodID can_fill = env->GetStaticMethodID(g_renderer_class, "canFill", "(I)Z");
 		jmethodID set_masks = env->GetStaticMethodID(g_renderer_class, "setElementMasks", "(II)V");
+		g_mid_set_masks = set_masks;
+		g_mid_set_quads = env->GetStaticMethodID(g_renderer_class, "setTrisAsQuads", "(Z)V");
+		clear_exception(env);
 		clear_exception(env);
 		if (!can_fill || !set_masks)
 		{
@@ -2248,6 +2301,8 @@ namespace
 			return false;
 		}
 
+		g_mask_tris = mask_tris;
+		g_mask_lines = mask_lines;
 		env->CallStaticVoidMethod(g_renderer_class, set_masks, mask_tris, mask_lines);
 		clear_exception(env);
 

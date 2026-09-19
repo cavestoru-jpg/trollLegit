@@ -115,6 +115,13 @@ public final class EnhanceRenderer implements InvocationHandler {
     private static int submitTextVertices;
     private static int textElements;
     private static boolean textAsQuads;
+
+    /**
+     * The glyph atlas's white pixel. A box has no texture coordinate of its
+     * own, and through a textured render type it needs one that is solid.
+     */
+    private static float whiteU = 0.0f;
+    private static float whiteV = 0.0f;
     private static int submitTriVertices;
     private static int submitLineVertices;
 
@@ -279,6 +286,12 @@ public final class EnhanceRenderer implements InvocationHandler {
         textAsQuads = quads;
     }
 
+    /** See {@link #whiteU}. */
+    public static void setWhiteUv(float u, float v) {
+        whiteU = u;
+        whiteV = v;
+    }
+
     /** See {@link #trisAsQuads}. */
     public static void setTrisAsQuads(boolean value) {
         trisAsQuads = value;
@@ -417,7 +430,7 @@ public final class EnhanceRenderer implements InvocationHandler {
                                      Integer.valueOf(channel(buf.getFloat(base + 24))));
                 }
                 if ((elements & ELEM_UV0) != 0) {
-                    mSetUv.invoke(consumer, Float.valueOf(0.0f), Float.valueOf(0.0f));
+                    mSetUv.invoke(consumer, Float.valueOf(whiteU), Float.valueOf(whiteV));
                 }
                 if ((elements & ELEM_UV1) != 0) {
                     mSetUv1.invoke(consumer, Integer.valueOf(0), Integer.valueOf(10));
