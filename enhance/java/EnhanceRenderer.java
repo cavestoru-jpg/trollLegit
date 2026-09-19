@@ -271,6 +271,14 @@ public final class EnhanceRenderer implements InvocationHandler {
 
     /** Publishes this frame's geometry for the submit callbacks to read. */
     public static void stageGeometry(ByteBuffer buffer, int triVertices, int lineVertices) {
+        // A buffer from NewDirectByteBuffer arrives BIG_ENDIAN, whatever the
+        // machine is. The OpenGL path never noticed because it handed the bytes
+        // straight to a VBO without reading them; this one reads floats out of
+        // them, and got noise -- positions and colours alike, which is what the
+        // black shapes on screen were.
+        if (buffer != null) {
+            buffer.order(ByteOrder.nativeOrder());
+        }
         submitBuffer = buffer;
         submitTriVertices = triVertices;
         submitLineVertices = lineVertices;
