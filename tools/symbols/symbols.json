@@ -2499,6 +2499,66 @@
       ]
     },
     {
+      "id": "abstract_chest_block_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "abstract_chest_block_class_sig",
+      "seed": {
+        "why": "storage ESP matches block states against this parent class: covers both chests and ender chests"
+      },
+      "class": "net/minecraft/world/level/block/AbstractChestBlock"
+    },
+    {
+      "id": "abstract_furnace_block_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "abstract_furnace_block_class_sig",
+      "seed": {
+        "why": "storage ESP matches block states against this parent class: furnaces, smokers, blast furnaces"
+      },
+      "class": "net/minecraft/world/level/block/AbstractFurnaceBlock"
+    },
+    {
+      "id": "barrel_block_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "barrel_block_class_sig",
+      "seed": {
+        "why": "storage ESP matches block states against this parent class: barrels"
+      },
+      "class": "net/minecraft/world/level/block/BarrelBlock"
+    },
+    {
+      "id": "crafter_block_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "crafter_block_class_sig",
+      "seed": {
+        "why": "storage ESP matches block states against this parent class: crafters (1.21+)"
+      },
+      "class": "net/minecraft/world/level/block/CrafterBlock"
+    },
+    {
+      "id": "dispenser_block_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "dispenser_block_class_sig",
+      "seed": {
+        "why": "storage ESP matches block states against this parent class: dispensers and droppers"
+      },
+      "class": "net/minecraft/world/level/block/DispenserBlock"
+    },
+    {
+      "id": "hopper_block_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "hopper_block_class_sig",
+      "seed": {
+        "why": "storage ESP matches block states against this parent class: hoppers"
+      },
+      "class": "net/minecraft/world/level/block/HopperBlock"
+    },
+    {
       "id": "living_renderer_render",
       "kind": "method",
       "emit_name": "living_renderer_render_name",
@@ -2516,6 +2576,16 @@
           "why": "superseded by updateRenderState"
         }
       ]
+    },
+    {
+      "id": "shulker_box_block_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "shulker_box_block_class_sig",
+      "seed": {
+        "why": "storage ESP matches block states against this parent class: shulker boxes"
+      },
+      "class": "net/minecraft/world/level/block/ShulkerBoxBlock"
     },
     {
       "id": "swing_animation_class",
@@ -2572,6 +2642,42 @@
       "owner": "net/minecraft/world/phys/Vec2",
       "name": "y",
       "desc": "F"
+    },
+    {
+      "id": "vec3i_get_x",
+      "kind": "method",
+      "emit_name": "vec3i_get_x_name",
+      "emit_sig": "vec3i_get_x_sig",
+      "seed": {
+        "why": "BlockPos extends Vec3i; this is how a block entity's coordinates are read"
+      },
+      "owner": "net/minecraft/core/Vec3i",
+      "name": "getX",
+      "desc": "()I"
+    },
+    {
+      "id": "vec3i_get_y",
+      "kind": "method",
+      "emit_name": "vec3i_get_y_name",
+      "emit_sig": "vec3i_get_y_sig",
+      "seed": {
+        "why": "BlockPos extends Vec3i; this is how a block entity's coordinates are read"
+      },
+      "owner": "net/minecraft/core/Vec3i",
+      "name": "getY",
+      "desc": "()I"
+    },
+    {
+      "id": "vec3i_get_z",
+      "kind": "method",
+      "emit_name": "vec3i_get_z_name",
+      "emit_sig": "vec3i_get_z_sig",
+      "seed": {
+        "why": "BlockPos extends Vec3i; this is how a block entity's coordinates are read"
+      },
+      "owner": "net/minecraft/core/Vec3i",
+      "name": "getZ",
+      "desc": "()I"
     },
     {
       "id": "channel_read0",

@@ -896,6 +896,25 @@ namespace sdk
 		extern const char* living_renderer_render_name;
 		extern const char* living_renderer_render_sig;
 
+		// Storage ESP matches a block state's block against these parent
+		// classes. They used to be hardcoded intermediary names, which meant the
+		// module could only ever work under Fabric.
+		extern const char* abstract_chest_block_class_sig;
+		extern const char* barrel_block_class_sig;
+		extern const char* shulker_box_block_class_sig;
+		extern const char* hopper_block_class_sig;
+		extern const char* dispenser_block_class_sig;
+		extern const char* crafter_block_class_sig;
+		extern const char* abstract_furnace_block_class_sig;
+
+		// BlockPos extends Vec3i, and its coordinates are read through these.
+		extern const char* vec3i_get_x_name;
+		extern const char* vec3i_get_x_sig;
+		extern const char* vec3i_get_y_name;
+		extern const char* vec3i_get_y_sig;
+		extern const char* vec3i_get_z_name;
+		extern const char* vec3i_get_z_sig;
+
 		// Vec2, the movement vector ClientInput has held since 1.21.5. Writing
 		// input means building one of these; before 1.21.5 the same two numbers
 		// are mutable float fields and this is absent.

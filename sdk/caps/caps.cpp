@@ -47,8 +47,12 @@ namespace sdk
 				  "Inventory.setSelectedSlot (1.21.2+)" },
 				{ feature::slot_switch,   { "inventory_selected_slot", nullptr },
 				  "the selected-slot field" },
-				{ feature::storage_esp,   { "client_world_block_entities", nullptr },
-				  "the world's rendered block-entity set (1.21.9+)" },
+				// What the module actually uses: it scans block states around the
+				// player rather than reading the world's block-entity set, so the
+				// 1.21.9 set it used to be gated on was never a requirement.
+				{ feature::storage_esp,   { "world_get_block_state", "block_state_get_block",
+				                            "block_pos_class", nullptr },
+				  "the block-state lookup storage ESP scans with" },
 				{ feature::team_colours,  { "dyed_color_get_color", "dyed_color_component_class", nullptr },
 				  "the dyed-colour item component (1.20.5+)" },
 				// Two shapes, either will do: the impulse fields (wherever they

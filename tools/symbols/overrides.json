@@ -322,5 +322,84 @@
       }
     ],
     "why": "where the model's pitch is sampled before 1.21.2: LivingEntityRenderer.render itself"
+  },
+  "abstract_chest_block_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/world/level/block/AbstractChestBlock",
+    "emit_sig": "abstract_chest_block_class_sig",
+    "why": "storage ESP matches block states against this parent class: covers both chests and ender chests"
+  },
+  "barrel_block_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/world/level/block/BarrelBlock",
+    "emit_sig": "barrel_block_class_sig",
+    "why": "storage ESP matches block states against this parent class: barrels"
+  },
+  "shulker_box_block_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/world/level/block/ShulkerBoxBlock",
+    "emit_sig": "shulker_box_block_class_sig",
+    "why": "storage ESP matches block states against this parent class: shulker boxes"
+  },
+  "hopper_block_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/world/level/block/HopperBlock",
+    "emit_sig": "hopper_block_class_sig",
+    "why": "storage ESP matches block states against this parent class: hoppers"
+  },
+  "dispenser_block_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/world/level/block/DispenserBlock",
+    "emit_sig": "dispenser_block_class_sig",
+    "why": "storage ESP matches block states against this parent class: dispensers and droppers"
+  },
+  "crafter_block_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/world/level/block/CrafterBlock",
+    "emit_sig": "crafter_block_class_sig",
+    "why": "storage ESP matches block states against this parent class: crafters (1.21+)"
+  },
+  "abstract_furnace_block_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/world/level/block/AbstractFurnaceBlock",
+    "emit_sig": "abstract_furnace_block_class_sig",
+    "why": "storage ESP matches block states against this parent class: furnaces, smokers, blast furnaces"
+  },
+  "vec3i_get_x": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/core/Vec3i",
+    "name": "getX",
+    "desc": "()I",
+    "emit_name": "vec3i_get_x_name",
+    "emit_sig": "vec3i_get_x_sig",
+    "why": "BlockPos extends Vec3i; this is how a block entity's coordinates are read"
+  },
+  "vec3i_get_y": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/core/Vec3i",
+    "name": "getY",
+    "desc": "()I",
+    "emit_name": "vec3i_get_y_name",
+    "emit_sig": "vec3i_get_y_sig",
+    "why": "BlockPos extends Vec3i; this is how a block entity's coordinates are read"
+  },
+  "vec3i_get_z": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/core/Vec3i",
+    "name": "getZ",
+    "desc": "()I",
+    "emit_name": "vec3i_get_z_name",
+    "emit_sig": "vec3i_get_z_sig",
+    "why": "BlockPos extends Vec3i; this is how a block entity's coordinates are read"
   }
 }

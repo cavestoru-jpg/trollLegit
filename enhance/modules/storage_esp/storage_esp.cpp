@@ -43,11 +43,6 @@ static void process_block_entity(JNIEnv* env, jobject block_entity, jclass chest
 	jmethodID get_pos_mid = env->GetMethodID(be_class, sdk::mappings::block_entity_get_pos_name, sdk::mappings::block_entity_get_pos_sig);
 	if (env->ExceptionCheck()) env->ExceptionClear();
 	
-	if (!get_pos_mid)
-	{
-		get_pos_mid = env->GetMethodID(be_class, "getPos", "()Lnet/minecraft/class_2338;");
-		if (env->ExceptionCheck()) env->ExceptionClear();
-	}
 	env->DeleteLocalRef(be_class);
 
 	if (!get_pos_mid) return;
@@ -55,16 +50,17 @@ static void process_block_entity(JNIEnv* env, jobject block_entity, jclass chest
 	jobject pos = env->CallObjectMethod(block_entity, get_pos_mid);
 	if (!pos) return;
 
-	// BlockPos extends Vec3i (class_2382), getX/Y/Z are in Vec3i
-	// Vec3i intermediary: method_10263=getX, method_10264=getY, method_10260=getZ
+	// BlockPos extends Vec3i, which is where getX/getY/getZ live.
 	jclass pos_class = env->GetObjectClass(pos);
-	
-	// Try intermediary names first (Vec3i methods)
-	jmethodID get_x_mid = env->GetMethodID(pos_class, "method_10263", "()I");
+
+	jmethodID get_x_mid = env->GetMethodID(pos_class, sdk::mappings::vec3i_get_x_name,
+	                                       sdk::mappings::vec3i_get_x_sig);
 	if (env->ExceptionCheck()) env->ExceptionClear();
-	jmethodID get_y_mid = env->GetMethodID(pos_class, "method_10264", "()I");
+	jmethodID get_y_mid = env->GetMethodID(pos_class, sdk::mappings::vec3i_get_y_name,
+	                                       sdk::mappings::vec3i_get_y_sig);
 	if (env->ExceptionCheck()) env->ExceptionClear();
-	jmethodID get_z_mid = env->GetMethodID(pos_class, "method_10260", "()I");
+	jmethodID get_z_mid = env->GetMethodID(pos_class, sdk::mappings::vec3i_get_z_name,
+	                                       sdk::mappings::vec3i_get_z_sig);
 	if (env->ExceptionCheck()) env->ExceptionClear();
 	
 	// Fallback to named methods
@@ -182,7 +178,7 @@ void enhance::modules::storage_esp::run()
 		jclass world_class = env->GetObjectClass(world);
 		
 		// Get BlockPos class and constructor
-		jclass block_pos_class = sdk::classloader::find_class(env, "net/minecraft/class_2338");
+		jclass block_pos_class = sdk::classloader::find_class(env, sdk::mappings::block_pos_class_sig);
 		if (!block_pos_class)
 		{
 			env->DeleteLocalRef(world_class);
@@ -206,20 +202,6 @@ void enhance::modules::storage_esp::run()
 			if (env->ExceptionCheck()) env->ExceptionClear();
 		}
 		
-		// Fallback to intermediary name if mappings not available
-		if (!get_block_state_mid)
-		{
-			// method_8320 is getBlockState in World (intermediary)
-			get_block_state_mid = env->GetMethodID(world_class, "method_8320", "(Lnet/minecraft/class_2338;)Lnet/minecraft/class_2680;");
-			if (env->ExceptionCheck()) env->ExceptionClear();
-		}
-		
-		if (!get_block_state_mid)
-		{
-			get_block_state_mid = env->GetMethodID(world_class, "getBlockState", "(Lnet/minecraft/class_2338;)Lnet/minecraft/class_2680;");
-			if (env->ExceptionCheck()) env->ExceptionClear();
-		}
-		
 		// BlockState.getBlock() -> Block
 		jclass block_state_class = nullptr;
 		jmethodID get_block_mid = nullptr;
@@ -230,12 +212,6 @@ void enhance::modules::storage_esp::run()
 			block_state_class = sdk::classloader::find_class(env, sdk::mappings::block_state_class_sig);
 		}
 		
-		// Fallback to hardcoded class signature
-		if (!block_state_class)
-		{
-			block_state_class = sdk::classloader::find_class(env, "net/minecraft/class_2680");
-		}
-		
 		if (block_state_class)
 		{
 			if (sdk::mappings::have(sdk::mappings::block_state_get_block_name) && sdk::mappings::have(sdk::mappings::block_state_get_block_sig))
@@ -244,71 +220,25 @@ void enhance::modules::storage_esp::run()
 				if (env->ExceptionCheck()) env->ExceptionClear();
 			}
 			
-			// Fallback to intermediary name if mappings not available
-			if (!get_block_mid)
-			{
-				// method_26204 is getBlock in BlockState (intermediary)
-				get_block_mid = env->GetMethodID(block_state_class, "method_26204", "()Lnet/minecraft/class_2248;");
-				if (env->ExceptionCheck()) env->ExceptionClear();
-			}
-			
-			if (!get_block_mid)
-			{
-				get_block_mid = env->GetMethodID(block_state_class, "getBlock", "()Lnet/minecraft/class_2248;");
-				if (env->ExceptionCheck()) env->ExceptionClear();
-			}
 		}
 		
-		// Storage block classes - use parent classes to match Java implementation
-		// AbstractChestBlock covers both ChestBlock and EnderChestBlock
-		jclass abstract_chest_block_class = sdk::classloader::find_class(env, "net/minecraft/class_2226"); // AbstractChestBlock
-		if (!abstract_chest_block_class)
-		{
-			abstract_chest_block_class = sdk::classloader::find_class(env, "net/minecraft/block/AbstractChestBlock");
-			if (env->ExceptionCheck()) env->ExceptionClear();
-		}
-		
-		jclass barrel_block_class = sdk::classloader::find_class(env, "net/minecraft/class_2203"); // BarrelBlock
-		if (!barrel_block_class)
-		{
-			barrel_block_class = sdk::classloader::find_class(env, "net/minecraft/block/BarrelBlock");
-			if (env->ExceptionCheck()) env->ExceptionClear();
-		}
-		
-		jclass shulker_box_block_class = sdk::classloader::find_class(env, "net/minecraft/class_2478"); // ShulkerBoxBlock
-		if (!shulker_box_block_class)
-		{
-			shulker_box_block_class = sdk::classloader::find_class(env, "net/minecraft/block/ShulkerBoxBlock");
-			if (env->ExceptionCheck()) env->ExceptionClear();
-		}
-		
-		jclass hopper_block_class = sdk::classloader::find_class(env, "net/minecraft/class_2265"); // HopperBlock
-		if (!hopper_block_class)
-		{
-			hopper_block_class = sdk::classloader::find_class(env, "net/minecraft/block/HopperBlock");
-			if (env->ExceptionCheck()) env->ExceptionClear();
-		}
-		
-		jclass dispenser_block_class = sdk::classloader::find_class(env, "net/minecraft/class_2272"); // DispenserBlock
-		if (!dispenser_block_class)
-		{
-			dispenser_block_class = sdk::classloader::find_class(env, "net/minecraft/block/DispenserBlock");
-			if (env->ExceptionCheck()) env->ExceptionClear();
-		}
-		
-		jclass crafter_block_class = sdk::classloader::find_class(env, "net/minecraft/class_2290"); // CrafterBlock (might not exist in 1.21.10)
-		if (!crafter_block_class)
-		{
-			crafter_block_class = sdk::classloader::find_class(env, "net/minecraft/block/CrafterBlock");
-			if (env->ExceptionCheck()) env->ExceptionClear();
-		}
-		
-		jclass abstract_furnace_block_class = sdk::classloader::find_class(env, "net/minecraft/class_2283"); // AbstractFurnaceBlock
-		if (!abstract_furnace_block_class)
-		{
-			abstract_furnace_block_class = sdk::classloader::find_class(env, "net/minecraft/block/AbstractFurnaceBlock");
-			if (env->ExceptionCheck()) env->ExceptionClear();
-		}
+		// Storage block classes, matched as parent classes so every chest-like
+		// variant is covered. An absent one (CrafterBlock before 1.21) simply
+		// never matches.
+		jclass abstract_chest_block_class = sdk::mappings::have(sdk::mappings::abstract_chest_block_class_sig)
+			? sdk::classloader::find_class(env, sdk::mappings::abstract_chest_block_class_sig) : nullptr;
+		jclass barrel_block_class = sdk::mappings::have(sdk::mappings::barrel_block_class_sig)
+			? sdk::classloader::find_class(env, sdk::mappings::barrel_block_class_sig) : nullptr;
+		jclass shulker_box_block_class = sdk::mappings::have(sdk::mappings::shulker_box_block_class_sig)
+			? sdk::classloader::find_class(env, sdk::mappings::shulker_box_block_class_sig) : nullptr;
+		jclass hopper_block_class = sdk::mappings::have(sdk::mappings::hopper_block_class_sig)
+			? sdk::classloader::find_class(env, sdk::mappings::hopper_block_class_sig) : nullptr;
+		jclass dispenser_block_class = sdk::mappings::have(sdk::mappings::dispenser_block_class_sig)
+			? sdk::classloader::find_class(env, sdk::mappings::dispenser_block_class_sig) : nullptr;
+		jclass crafter_block_class = sdk::mappings::have(sdk::mappings::crafter_block_class_sig)
+			? sdk::classloader::find_class(env, sdk::mappings::crafter_block_class_sig) : nullptr;
+		jclass abstract_furnace_block_class = sdk::mappings::have(sdk::mappings::abstract_furnace_block_class_sig)
+			? sdk::classloader::find_class(env, sdk::mappings::abstract_furnace_block_class_sig) : nullptr;
 		
 		if (block_pos_ctor && get_block_state_mid && get_block_mid)
 		{
