@@ -1598,16 +1598,10 @@ void enhance::modules::aiming::tick_movement_hook::frame_probe()
 	float true_yaw = 0.0f, true_pitch = 0.0f;
 	const bool have_true = true_rotation(true_yaw, true_pitch);
 
-	// The camera yaw is reported as the game stores it -- 180 degrees away from
-	// the entity yaw, because Camera.getYaw returns the view direction. Bringing
-	// it back makes the four numbers directly comparable, which is the whole
-	// point of printing them on one line.
-	const float cam_entity_yaw = cam_yaw + 180.0f;
-
 	char line[256];
 	sprintf_s(line, sizeof(line),
 		"[frame] cam %.1f/%.1f%s | field %.1f/%.1f | prev %.1f/%.1f | true %.1f/%.1f%s | swaps=%d %s",
-		cam_entity_yaw, cam_pitch, have_cam ? "" : " (none)",
+		cam_yaw, cam_pitch, have_cam ? "" : " (none)",
 		yaw, pitch, prev_yaw, prev_pitch,
 		true_yaw, true_pitch, have_true ? "" : " (stale)",
 		g_swap_depth.load(std::memory_order_acquire),
