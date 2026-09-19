@@ -472,57 +472,6 @@ static void* trident_callback()
 	return nullptr;
 }
 
-// Camera.alignWithEntity -- the exact moment the view samples the player's
-// rotation. A probe, not a feature: it calls straight through and only reports
-// what the camera is about to read, and whether one of our swaps is holding a
-// fake angle while it reads it.
-static jmethodID ORIG_camera_align = nullptr, g_mid_camera_align = nullptr;
-static jclass    g_camera_class = nullptr;
-static bool      g_camera_detached_ok = true;
-
-static void hkCameraAlign(JNIEnv* env, jobject thiz, jfloat partial)
-{
-	static ULONGLONG s_next = 0;
-	const ULONGLONG now = GetTickCount64();
-	if (globals::aiming_debug_log && now >= s_next && g_mid_get_yaw && g_mid_get_pitch)
-	{
-		s_next = now + 500;
-		jobject me = fetch_local_player(env);
-		if (me)
-		{
-			const float yaw = env->CallFloatMethod(me, g_mid_get_yaw);
-			if (env->ExceptionCheck()) env->ExceptionClear();
-			const float pitch = env->CallFloatMethod(me, g_mid_get_pitch);
-			if (env->ExceptionCheck()) env->ExceptionClear();
-
-			float last_yaw = 0.0f, last_pitch = 0.0f;
-			if (g_fid_last_yaw)   last_yaw = env->GetFloatField(me, g_fid_last_yaw);
-			if (g_fid_last_pitch) last_pitch = env->GetFloatField(me, g_fid_last_pitch);
-			if (env->ExceptionCheck()) env->ExceptionClear();
-
-			float true_yaw = 0.0f, true_pitch = 0.0f;
-			const bool have_true =
-				enhance::modules::aiming::tick_movement_hook::true_rotation(true_yaw, true_pitch);
-
-			char line[256];
-			sprintf_s(line, sizeof(line),
-				"[camera] yaw %.1f (prev %.1f) pitch %.1f (prev %.1f) | true %.1f/%.1f%s | swaps=%d %s",
-				yaw, last_yaw, pitch, last_pitch, true_yaw, true_pitch,
-				have_true ? "" : " (stale)",
-				g_swap_depth.load(std::memory_order_acquire),
-				g_swap_tag.load(std::memory_order_relaxed));
-			logger::log(line);
-			env->DeleteLocalRef(me);
-		}
-	}
-
-	if (ORIG_camera_align && g_camera_class && thiz)
-	{
-		env->CallNonvirtualVoidMethod(thiz, g_camera_class, ORIG_camera_align, partial);
-		if (env->ExceptionCheck()) env->ExceptionClear();
-	}
-}
-
 // ClientInput.tick -- where the game rebuilds this tick's movement input.
 //
 // Silent movement correction lives here and nowhere else. The server recomputes
@@ -1430,9 +1379,6 @@ bool enhance::modules::aiming::tick_movement_hook::init()
 			// base class but holds the concrete one, and it overrides tick. A hook
 			// on the base attaches and then never fires -- which is exactly how
 			// Silent correction stayed indistinguishable from Strict.
-			{ sdk::mappings::camera_class_sig, sdk::mappings::camera_align_with_entity_name,
-			  sdk::mappings::camera_align_with_entity_sig, (void*)hkCameraAlign,
-			  &ORIG_camera_align, &g_mid_camera_align, &g_camera_class, "camera probe" },
 			{ sdk::mappings::keyboard_input_class_sig, sdk::mappings::keyboard_input_tick_name,
 			  sdk::mappings::keyboard_input_tick_sig, input_tick_callback(),
 			  &ORIG_input_tick, &g_mid_input_tick, &g_input_class, "movement input" },
@@ -1614,6 +1560,61 @@ bool enhance::modules::aiming::tick_movement_hook::detached_cleanly()
 	       g_rs_detached_ok;
 }
 bool enhance::modules::aiming::tick_movement_hook::attached()         { return g_attached; }
+void enhance::modules::aiming::tick_movement_hook::frame_probe()
+{
+	if (!globals::aiming_debug_log)
+		return;
+
+	static ULONGLONG s_next = 0;
+	const ULONGLONG now = GetTickCount64();
+	if (now < s_next)
+		return;
+	s_next = now + 500;
+
+	JNIEnv* env = sdk::render::current_thread_env();
+	if (!env || !g_mid_get_yaw || !g_mid_get_pitch)
+		return;
+
+	jobject me = fetch_local_player(env);
+	if (!me)
+		return;
+
+	const float yaw = env->CallFloatMethod(me, g_mid_get_yaw);
+	if (env->ExceptionCheck()) env->ExceptionClear();
+	const float pitch = env->CallFloatMethod(me, g_mid_get_pitch);
+	if (env->ExceptionCheck()) env->ExceptionClear();
+
+	float prev_yaw = 0.0f, prev_pitch = 0.0f;
+	if (g_fid_last_yaw)   prev_yaw = env->GetFloatField(me, g_fid_last_yaw);
+	if (g_fid_last_pitch) prev_pitch = env->GetFloatField(me, g_fid_last_pitch);
+	if (env->ExceptionCheck()) env->ExceptionClear();
+
+	env->DeleteLocalRef(me);
+
+	double cx = 0.0, cy = 0.0, cz = 0.0;
+	float cam_yaw = 0.0f, cam_pitch = 0.0f, cam_fov = 0.0f;
+	const bool have_cam = sdk::render::sample_camera(cx, cy, cz, cam_yaw, cam_pitch, cam_fov);
+
+	float true_yaw = 0.0f, true_pitch = 0.0f;
+	const bool have_true = true_rotation(true_yaw, true_pitch);
+
+	// The camera yaw is reported as the game stores it -- 180 degrees away from
+	// the entity yaw, because Camera.getYaw returns the view direction. Bringing
+	// it back makes the four numbers directly comparable, which is the whole
+	// point of printing them on one line.
+	const float cam_entity_yaw = cam_yaw + 180.0f;
+
+	char line[256];
+	sprintf_s(line, sizeof(line),
+		"[frame] cam %.1f/%.1f%s | field %.1f/%.1f | prev %.1f/%.1f | true %.1f/%.1f%s | swaps=%d %s",
+		cam_entity_yaw, cam_pitch, have_cam ? "" : " (none)",
+		yaw, pitch, prev_yaw, prev_pitch,
+		true_yaw, true_pitch, have_true ? "" : " (stale)",
+		g_swap_depth.load(std::memory_order_acquire),
+		g_swap_tag.load(std::memory_order_relaxed));
+	logger::log(line);
+}
+
 bool enhance::modules::aiming::tick_movement_hook::true_rotation(float& yaw, float& pitch)
 {
 	const uint64_t stamp = g_true_stamp.load(std::memory_order_acquire);

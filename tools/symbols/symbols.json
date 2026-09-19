@@ -2536,18 +2536,6 @@
       "class": "net/minecraft/world/level/block/BarrelBlock"
     },
     {
-      "id": "camera_align_with_entity",
-      "kind": "method",
-      "emit_name": "camera_align_with_entity_name",
-      "emit_sig": "camera_align_with_entity_sig",
-      "seed": {
-        "why": "where the camera reads the entity's interpolated rotation. Hooked as a probe: it is the one place that can say whether the view is being fed a faked angle"
-      },
-      "owner": "net/minecraft/client/Camera",
-      "name": "alignWithEntity",
-      "desc": "(F)V"
-    },
-    {
       "id": "crafter_block_class",
       "kind": "class",
       "emit_name": null,

@@ -4,6 +4,7 @@
 #include "../utils/client_thread.h"
 #include <jnihook.h>
 #include "../gui/GUI.h"
+#include "../modules/aiming/tick_movement_hook.h"
 #include "../globals/globals.h"
 #include "../utils/logger.h"
 
@@ -539,6 +540,10 @@ bool __stdcall wglSwapBuffers(HDC hDc)
 	// still holding crashed the render thread with an access violation inside
 	// jvm.dll, several minutes into a session. Marking the thread above is
 	// safe and still worth doing; running the attaches here is not.
+
+	// Same thread the game ticks and renders on, so these numbers are exactly
+	// the ones this frame was built from.
+	enhance::modules::aiming::tick_movement_hook::frame_probe();
 
 	HGLRC origin_context{ wglGetCurrentContext() };
 

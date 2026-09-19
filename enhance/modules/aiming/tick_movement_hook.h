@@ -62,4 +62,10 @@ namespace enhance::modules::aiming::tick_movement_hook
 	// silent angle in it for the length of a tick, so a live read is a coin toss
 	// between the real angle and the fake one.
 	bool true_rotation(float& yaw, float& pitch);
+
+	// Prints, from the render thread, the four rotations that decide what the
+	// view shows: the camera's own, the live field, the previous-tick field the
+	// renderer interpolates from, and the real angle published by the tick.
+	// Only speaks while the aiming debug log is on, twice a second.
+	void frame_probe();
 }

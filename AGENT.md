@@ -205,6 +205,20 @@ Things that cost time here:
 - **A failed attach used to say only `failed=8`.** `JNIHook_LastErrorDetail()` now carries the
   Java exception's `toString()`, which is what turned the above from a guess into a fix.
 - Attach from the **client thread**, not the worker (`enhance::client_thread::post`).
+- **Do not hook `Camera`.** Attaching to `Camera.alignWithEntity` on 26.3 attached cleanly,
+  logged one frame, and then killed the process:
+
+  ```
+  EXCEPTION_ACCESS_VIOLATION (0xc0000005) at pc=..., Render thread
+  j  net.minecraft.client.Camera.setPosition(Lnet/minecraft/world/phys/Vec3;)V+10
+  The last pc belongs to getfield
+  ```
+
+  A sibling method of the redefined class faulted on a field read. Whatever the exact
+  mechanism, the class is not safe to redefine, and there is no need to: the camera's own
+  yaw and pitch are already readable from the render thread through
+  `sdk::render::sample_camera`, which the 3D ESP has depended on for as long as it has
+  existed. Use that.
 
 **Always check the log for the `hook attached` lines after injecting.** A failed attach is
 silent, and "the feature does nothing" looks identical to "the feature was never installed".

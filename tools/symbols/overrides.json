@@ -445,15 +445,5 @@
     "emit_name": "entity_get_pitch_noarg_name",
     "emit_sig": "entity_get_pitch_noarg_sig",
     "why": "the pitch as it stands, not interpolated. entity_get_pitch is getViewXRot(F)F, the tick-delta variant, which is why two hooks used to name the no-arg getter by hand in intermediary -- and therefore resolved nothing at all on 26.x or vanilla"
-  },
-  "camera_align_with_entity": {
-    "new": true,
-    "kind": "method",
-    "owner": "net/minecraft/client/Camera",
-    "name": "alignWithEntity",
-    "desc": "(F)V",
-    "emit_name": "camera_align_with_entity_name",
-    "emit_sig": "camera_align_with_entity_sig",
-    "why": "where the camera reads the entity's interpolated rotation. Hooked as a probe: it is the one place that can say whether the view is being fed a faked angle"
   }
 }

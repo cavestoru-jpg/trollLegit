@@ -896,11 +896,6 @@ namespace sdk
 		extern const char* living_renderer_render_name;
 		extern const char* living_renderer_render_sig;
 
-		// Camera.alignWithEntity -- where the view samples the player's
-		// interpolated rotation. Hooked only to watch it.
-		extern const char* camera_align_with_entity_name;
-		extern const char* camera_align_with_entity_sig;
-
 		// Entity.getXRot() -- the pitch as it stands. entity_get_pitch is the
 		// (F)F tick-delta variant, which is a different question and the reason
 		// the rotation hooks used to name this one by hand.
