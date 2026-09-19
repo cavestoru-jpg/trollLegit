@@ -356,6 +356,19 @@ does, by construction, since the yaw is swapped around `tick()` and `travel()` i
   Python as `a\modules`, and `\\t` becomes a literal tab — which silently corrupted a path in
   `enhance.vcxproj`. Write the script to a file and run it, or use the Edit tool.
 - **New `.cpp` files must be added to `enhance.vcxproj`** or you get unresolved externals.
+- **Filtering window messages does not stop the mouse.** `EnumWindows` walks top-level windows
+  only, so a message-only window (parented to `HWND_MESSAGE`) and any child window are invisible
+  to it, and SDL registers raw mouse input against a message-only window. The subclass sweep now
+  covers all three and reruns whenever the menu opens, because SDL creates that window lazily.
+  Raw input is also **not** swallowed by returning 0 — the system frees the buffer only when the
+  message reaches `DefWindowProc`.
+- **Raw input registration is per-process, and the client is in the process.** Suspending the
+  game's own mouse registration while the menu is open works whatever window it targets and
+  whether GLFW or SDL is underneath. Save the `RAWINPUTDEVICE` array verbatim and restore it
+  verbatim — `RIDEV_NOLEGACY` decides whether ordinary `WM_MOUSE*` messages flow, so a wrong
+  restore leaves the game deaf to the mouse or hearing it twice. `RIDEV_REMOVE` requires
+  `hwndTarget == nullptr`. Restore on unload too, or unloading with the menu open leaves the game
+  with no mouse until it restarts.
 - The project is small enough that a full build is ~1–2 minutes; there is no reason to skip it.
 
 ## Licence

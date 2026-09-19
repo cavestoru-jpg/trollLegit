@@ -64,7 +64,14 @@ struct sibling_window
 static std::vector<sibling_window> g_siblings;
 
 static void subclass_sibling_windows();
+
+// What the filter actually caught while the menu was open. Reported when it
+// closes: if the camera turned and raw is 0, the input is arriving somewhere
+// this procedure never sees, and no amount of filtering here will stop it.
+static unsigned g_ate_raw = 0, g_ate_move = 0, g_ate_wheel = 0;
+static unsigned g_ate_key = 0, g_ate_button = 0;
 static void restore_sibling_windows();
+static void resume_raw_mouse();
 
 static HWND find_own_window()
 {
@@ -100,13 +107,59 @@ static HWND find_own_window()
 	return state.best;
 }
 
+static void try_subclass(HWND hwnd, const char* kind)
+{
+	if (!hwnd || hwnd == wnd_handle)
+		return;
+
+	for (const auto& sw : g_siblings)
+		if (sw.hwnd == hwnd)
+			return;
+
+	WNDPROC current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+	if (!current || current == WndProc)
+		return;
+
+	wchar_t cls[64]{};
+	GetClassNameW(hwnd, cls, 64);
+
+	SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)WndProc);
+	g_siblings.push_back({ hwnd, current });
+
+	char line[192];
+	sprintf_s(line, sizeof(line), "[input] subclassed %s window 0x%p class=%ls",
+	          kind, (void*)hwnd, cls);
+	logger::log(line);
+}
+
+// Every window of this process that can carry input, not just the top-level
+// ones.
+//
+// EnumWindows walks top-level windows only. Two kinds are invisible to it and
+// both matter:
+//
+//   child windows        -- a windowing library may put the render surface in
+//                           one, and it takes the mouse messages with it
+//   message-only windows -- parented to HWND_MESSAGE. SDL creates one and
+//                           registers raw mouse input against it, so WM_INPUT
+//                           is delivered THERE and never passes through the
+//                           game window. Filtering the game window therefore
+//                           did nothing: the menu opened, the cursor came free,
+//                           and the camera kept turning with the mouse.
+//
+// Called again whenever the menu opens, because a window registered lazily --
+// SDL's helper window appears with the first relative-mouse request -- did not
+// exist when the client attached.
 static void subclass_sibling_windows()
 {
 	struct collect
 	{
-		DWORD pid;
-		HWND  main_window;
-	} state{ GetCurrentProcessId(), wnd_handle };
+		DWORD               pid;
+		std::vector<HWND>*  tops;
+	};
+
+	std::vector<HWND> tops;
+	collect state{ GetCurrentProcessId(), &tops };
 
 	EnumWindows([](HWND hwnd, LPARAM param) -> BOOL
 	{
@@ -114,17 +167,36 @@ static void subclass_sibling_windows()
 
 		DWORD pid = 0;
 		GetWindowThreadProcessId(hwnd, &pid);
-		if (pid != st->pid || hwnd == st->main_window)
-			return TRUE;
-
-		WNDPROC current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
-		if (!current || current == WndProc)
-			return TRUE;
-
-		SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)WndProc);
-		g_siblings.push_back({ hwnd, current });
+		if (pid == st->pid)
+			st->tops->push_back(hwnd);
 		return TRUE;
 	}, reinterpret_cast<LPARAM>(&state));
+
+	for (HWND top : tops)
+	{
+		try_subclass(top, "top-level");
+		EnumChildWindows(top, [](HWND kid, LPARAM) -> BOOL
+		{
+			try_subclass(kid, "child");
+			return TRUE;
+		}, 0);
+	}
+
+	const DWORD self = GetCurrentProcessId();
+	HWND prev = nullptr;
+	for (;;)
+	{
+		HWND h = FindWindowExW(HWND_MESSAGE, prev, nullptr, nullptr);
+		if (!h)
+			break;
+
+		DWORD pid = 0;
+		GetWindowThreadProcessId(h, &pid);
+		if (pid == self)
+			try_subclass(h, "message-only");
+
+		prev = h;
+	}
 }
 
 static void restore_sibling_windows()
@@ -252,6 +324,10 @@ void Hook::shutdown()
 	// message entries. Waiting first and restoring afterwards would leave a gap
 	// in which a fresh message walks straight into a module about to be freed.
 	MH_DisableHook(MH_ALL_HOOKS);
+
+	// Unloading with the menu open must not leave the game without a mouse: the
+	// registration we took away belongs to the game and outlives this module.
+	resume_raw_mouse();
 
 	if (wnd_handle && IsWindow(wnd_handle))
 	{
@@ -411,6 +487,117 @@ static bool matches_bind(int vk_pressed, int vk_bound)
 	return false;
 }
 
+// The game's own raw input registration, suspended while the menu is open.
+//
+// Filtering window messages only works if the messages come through a window
+// this client subclassed. Raw input does not have to: the registration names
+// its own target, and with RIDEV_INPUTSINK it is delivered there whatever has
+// focus. Rather than chase the target, drop the registration -- it is
+// per-process state, and the client is in the process.
+//
+// Saved verbatim and restored verbatim, because the flags matter: RIDEV_NOLEGACY
+// suppresses the ordinary WM_MOUSE* messages, and putting it back wrong would
+// leave the game either deaf to the mouse or hearing it twice.
+static std::vector<RAWINPUTDEVICE> g_saved_rid;
+
+static void suspend_raw_mouse()
+{
+	g_saved_rid.clear();
+
+	UINT count = 0;
+	GetRegisteredRawInputDevices(nullptr, &count, sizeof(RAWINPUTDEVICE));
+	if (count == 0)
+	{
+		logger::log("[input] the game has no raw input registered; "
+		            "the mouse must be arriving as ordinary window messages");
+		return;
+	}
+
+	std::vector<RAWINPUTDEVICE> all(count);
+	const UINT got = GetRegisteredRawInputDevices(all.data(), &count, sizeof(RAWINPUTDEVICE));
+	if (got == (UINT)-1)
+		return;
+	all.resize(got);
+
+	std::vector<RAWINPUTDEVICE> off;
+	for (const auto& d : all)
+	{
+		char line[192];
+		sprintf_s(line, sizeof(line),
+		          "[input] raw device page=%u usage=%u flags=0x%lX target=0x%p%s",
+		          (unsigned)d.usUsagePage, (unsigned)d.usUsage,
+		          (unsigned long)d.dwFlags, (void*)d.hwndTarget,
+		          (d.usUsagePage == 0x01 && d.usUsage == 0x02) ? "  <- mouse, suspending" : "");
+		logger::log(line);
+
+		// Generic desktop / mouse. The keyboard is left registered: the game
+		// does not steer with it, and the menu's own typing is unaffected.
+		if (d.usUsagePage == 0x01 && d.usUsage == 0x02)
+		{
+			g_saved_rid.push_back(d);
+
+			RAWINPUTDEVICE gone = d;
+			gone.dwFlags = RIDEV_REMOVE;
+			gone.hwndTarget = nullptr;   // required, or the call fails outright
+			off.push_back(gone);
+		}
+	}
+
+	if (off.empty())
+		return;
+
+	if (!RegisterRawInputDevices(off.data(), (UINT)off.size(), sizeof(RAWINPUTDEVICE)))
+	{
+		char line[128];
+		sprintf_s(line, sizeof(line), "[input] could not suspend the raw mouse (error %lu)",
+		          GetLastError());
+		logger::log_error(line);
+		g_saved_rid.clear();
+	}
+}
+
+static void resume_raw_mouse()
+{
+	if (g_saved_rid.empty())
+		return;
+
+	if (!RegisterRawInputDevices(g_saved_rid.data(), (UINT)g_saved_rid.size(),
+	                             sizeof(RAWINPUTDEVICE)))
+	{
+		char line[160];
+		sprintf_s(line, sizeof(line),
+		          "[input] FAILED to give the raw mouse back (error %lu) -- "
+		          "the game will not see the mouse until it restarts",
+		          GetLastError());
+		logger::log_error(line);
+	}
+	g_saved_rid.clear();
+}
+
+// A window may be created after the client attached -- SDL's message-only
+// window shows up with the first relative-mouse request -- so the sweep runs
+// again every time the menu opens rather than once at startup.
+static void on_menu_opened(HWND hWnd)
+{
+	g_ate_raw = g_ate_move = g_ate_wheel = g_ate_key = g_ate_button = 0;
+	subclass_sibling_windows();
+	suspend_raw_mouse();
+	release_held_keys_to_mc(hWnd);
+}
+
+static void report_swallowed()
+{
+	resume_raw_mouse();
+
+	char line[192];
+	sprintf_s(line, sizeof(line),
+	          "[input] menu closed; swallowed raw=%u move=%u wheel=%u key=%u button=%u"
+	          " across %zu subclassed windows",
+	          g_ate_raw, g_ate_move, g_ate_wheel, g_ate_key, g_ate_button,
+	          g_siblings.size() + 1);
+	logger::log(line);
+}
+
 LRESULT __stdcall WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
 	// Window messages arrive asynchronously on the game's message thread, so
@@ -428,8 +615,8 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		const bool now_open = GUI::get_do_draw();
 		if (now_open != s_prev_gui_open)
 		{
-			if (now_open) release_held_keys_to_mc(hWnd);
-			else          restore_cursor_state(hWnd);
+			if (now_open) { on_menu_opened(hWnd); }
+			else          { report_swallowed(); restore_cursor_state(hWnd); }
 			s_prev_gui_open = now_open;
 		}
 
@@ -442,8 +629,8 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 				const bool was_open = GUI::get_do_draw();
 				GUI::set_do_draw(!was_open);
 				const bool now_open = GUI::get_do_draw();
-				if (!was_open && now_open) release_held_keys_to_mc(hWnd);
-				else if (was_open && !now_open) restore_cursor_state(hWnd);
+				if (!was_open && now_open) on_menu_opened(hWnd);
+				else if (was_open && !now_open) { report_swallowed(); restore_cursor_state(hWnd); }
 				s_prev_gui_open = now_open;
 				return 0;
 			}
@@ -459,17 +646,29 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			// Swallow input for MC so the player doesn't move/look while the menu is open.
 			switch (msg)
 			{
+			case WM_INPUT:
+				// Raw input is not swallowed by returning 0: the system frees the
+				// buffer only when the message reaches DefWindowProc. The game
+				// still never sees it -- its own procedure is not called.
+				++g_ate_raw;
+				return DefWindowProcW(hWnd, msg, wParam, lParam);
 			case WM_KEYDOWN: case WM_KEYUP:
 			case WM_SYSKEYDOWN: case WM_SYSKEYUP:
 			case WM_CHAR: case WM_DEADCHAR:
 			case WM_SYSCHAR: case WM_SYSDEADCHAR:
+				++g_ate_key;
+				return 0;
 			case WM_MOUSEMOVE:
+				++g_ate_move;
+				return 0;
 			case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
-			case WM_INPUT:
+				++g_ate_wheel;
+				return 0;
 			case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
 			case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
 			case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
 			case WM_XBUTTONDOWN: case WM_XBUTTONUP: case WM_XBUTTONDBLCLK:
+				++g_ate_button;
 				return 0;
 			case WM_SETCURSOR:
 				SetCursor(LoadCursor(NULL, IDC_ARROW));
