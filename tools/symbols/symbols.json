@@ -2622,16 +2622,23 @@
       "class": "net/minecraft/world/level/block/HopperBlock"
     },
     {
-      "id": "level_renderer_submit_features",
+      "id": "level_renderer_submit_entities",
       "kind": "method",
-      "emit_name": "level_renderer_submit_features_name",
-      "emit_sig": "level_renderer_submit_features_sig",
+      "emit_name": "level_renderer_submit_entities_name",
+      "emit_sig": "level_renderer_submit_entities_sig",
       "seed": {
-        "why": "a candidate for WHEN to submit: it is handed the collector as its second argument, so a hook lands at exactly the right moment. Sodium and Iris both mix into LevelRenderer but both target renderLevel, not this -- which is also why the old JNIHook on renderLevel blanked the world. Only exists from 26.2; earlier versions in this era need another entry point"
+        "why": "WHEN to submit. It hands over both things the in-world ESP needs -- the PoseStack and the collector -- at the moment the frame is taking entity geometry, which is exactly where entity boxes belong. Present on all six versions of the submit era, unlike submitFeatures which starts at 26.2. Neither Sodium 0.8.6/0.9.1 nor Iris 1.11.3 names it in any mixin: both mix into LevelRenderer but target renderLevel, which is what the abandoned JNIHook attached to and why the world went blank"
       },
       "owner": "net/minecraft/client/renderer/LevelRenderer",
-      "name": "submitFeatures",
-      "desc": "(Lnet/minecraft/client/renderer/state/level/LevelRenderState;Lnet/minecraft/client/renderer/SubmitNodeCollector;Z)V"
+      "name": "submitEntities",
+      "desc": "(Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/state/level/LevelRenderState;Lnet/minecraft/client/renderer/SubmitNodeCollector;)V",
+      "versions": [
+        {
+          "until": "1.21.11",
+          "desc": "(Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/state/LevelRenderState;Lnet/minecraft/client/renderer/SubmitNodeCollector;)V",
+          "why": "LevelRenderState moved into the state/level package in 26.1"
+        }
+      ]
     },
     {
       "id": "level_renderer_submit_node_storage",
@@ -2688,41 +2695,41 @@
     },
     {
       "id": "render_type_debug_filled_box",
-      "kind": "field",
+      "kind": "method",
       "emit_name": "render_type_debug_filled_box_name",
       "emit_sig": "render_type_debug_filled_box_sig",
       "seed": {
-        "why": "filled box faces"
+        "why": "filled box faces. The factory rather than the LINES/DEBUG_FILLED_BOX static: before the split those fields are declared RenderType$CompositeRenderType, so their descriptor does not match across the boundary while the factory's return type does"
       },
       "owner": "net/minecraft/client/renderer/rendertype/RenderTypes",
-      "name": "DEBUG_FILLED_BOX",
-      "desc": "Lnet/minecraft/client/renderer/rendertype/RenderType;",
+      "name": "debugFilledBox",
+      "desc": "()Lnet/minecraft/client/renderer/rendertype/RenderType;",
       "versions": [
         {
           "until": "1.21.10",
           "owner": "net/minecraft/client/renderer/RenderType",
-          "desc": "Lnet/minecraft/client/renderer/RenderType;",
-          "why": "statics lived on RenderType before the split"
+          "desc": "()Lnet/minecraft/client/renderer/RenderType;",
+          "why": "RenderType moved into the rendertype package in 1.21.11, taking its named types with it into a new RenderTypes holder"
         }
       ]
     },
     {
       "id": "render_type_lines",
-      "kind": "field",
+      "kind": "method",
       "emit_name": "render_type_lines_name",
       "emit_sig": "render_type_lines_sig",
       "seed": {
-        "why": "box edges"
+        "why": "box edges. The factory rather than the LINES/DEBUG_FILLED_BOX static: before the split those fields are declared RenderType$CompositeRenderType, so their descriptor does not match across the boundary while the factory's return type does"
       },
       "owner": "net/minecraft/client/renderer/rendertype/RenderTypes",
-      "name": "LINES",
-      "desc": "Lnet/minecraft/client/renderer/rendertype/RenderType;",
+      "name": "lines",
+      "desc": "()Lnet/minecraft/client/renderer/rendertype/RenderType;",
       "versions": [
         {
           "until": "1.21.10",
           "owner": "net/minecraft/client/renderer/RenderType",
-          "desc": "Lnet/minecraft/client/renderer/RenderType;",
-          "why": "statics lived on RenderType before the split"
+          "desc": "()Lnet/minecraft/client/renderer/RenderType;",
+          "why": "RenderType moved into the rendertype package in 1.21.11, taking its named types with it into a new RenderTypes holder"
         }
       ]
     },
