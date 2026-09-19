@@ -75,6 +75,25 @@ static std::atomic<bool> g_swapping{false};
 // exactly why Silent correction behaved like Strict.
 static std::atomic<float> g_applied_dyaw{0.0f};
 
+// The player's rotation as it stands with no swap applied, published from the
+// tick thread for the worker to read.
+//
+// The worker cannot sample the field itself: the hooks hold the silent angle in
+// it for the length of a tick and for each raycast, so about half its samples
+// come back fake. Aiming off a fake angle and then normalising the answer around
+// it feeds back into the next tick -- the view swings tens of degrees with a
+// single locked target standing still.
+static std::atomic<float>    g_true_yaw{0.0f};
+static std::atomic<float>    g_true_pitch{0.0f};
+static std::atomic<uint64_t> g_true_stamp{0};
+
+static void publish_true_rotation(float yaw, float pitch)
+{
+	g_true_yaw.store(yaw, std::memory_order_relaxed);
+	g_true_pitch.store(pitch, std::memory_order_relaxed);
+	g_true_stamp.store(GetTickCount64(), std::memory_order_release);
+}
+
 // Diagnostics only: the pitch as it stood when the original tick returned.
 // If this still carries the silent value then the fake angle survived the
 // whole tick, which means the look packet was built from it; if it has
@@ -247,6 +266,9 @@ struct scoped_yaw_swap
 		if (env->ExceptionCheck()) { env->ExceptionClear(); return; }
 		const float real_pitch = env->CallFloatMethod(player, g_mid_get_pitch);
 		if (env->ExceptionCheck()) { env->ExceptionClear(); return; }
+
+		// Same publication: every wrap samples the truth on its way in.
+		publish_true_rotation(real_yaw, real_pitch);
 
 		// Take the short way round. A raw subtraction would hand back deltas
 		// like 350 instead of -10 whenever the two angles straddle the wrap
@@ -798,6 +820,19 @@ static void hkTick(JNIEnv* env, jobject thiz)
 	// bad packets. The raycast needs its own narrow hook rather than a wider
 	// bracket around everything.
 	jobject player = thiz;
+
+	// Still the real angles here: nothing has swapped yet this tick.
+	if (player && g_mid_get_yaw && g_mid_get_pitch)
+	{
+		const float y = env->CallFloatMethod(player, g_mid_get_yaw);
+		if (env->ExceptionCheck()) env->ExceptionClear();
+		else
+		{
+			const float pch = env->CallFloatMethod(player, g_mid_get_pitch);
+			if (env->ExceptionCheck()) env->ExceptionClear();
+			else publish_true_rotation(y, pch);
+		}
+	}
 
 	// Sprint reset, requested from the worker and applied here because this is
 	// the only thread on which setSprinting is safe. Runs before the original
@@ -1509,5 +1544,16 @@ bool enhance::modules::aiming::tick_movement_hook::detached_cleanly()
 	       g_rs_detached_ok;
 }
 bool enhance::modules::aiming::tick_movement_hook::attached()         { return g_attached; }
+bool enhance::modules::aiming::tick_movement_hook::true_rotation(float& yaw, float& pitch)
+{
+	const uint64_t stamp = g_true_stamp.load(std::memory_order_acquire);
+	if (stamp == 0 || GetTickCount64() - stamp > 500)
+		return false;   // stale: no tick has run recently, so the field is honest anyway
+
+	yaw = g_true_yaw.load(std::memory_order_relaxed);
+	pitch = g_true_pitch.load(std::memory_order_relaxed);
+	return true;
+}
+
 bool enhance::modules::aiming::tick_movement_hook::is_swapping()      { return g_swapping.load(std::memory_order_acquire); }
 

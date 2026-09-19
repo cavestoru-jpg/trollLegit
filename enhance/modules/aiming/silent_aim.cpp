@@ -213,8 +213,13 @@ void enhance::modules::aiming::silent_aim::run()
 	}
 
 	sdk::entity_client le(local_player);
-	const float real_yaw   = le.get_yaw();
-	const float real_pitch = le.get_pitch();
+	// From the tick thread, not from the live field: the hooks hold the silent
+	// angle in it for the length of a tick, so sampling here is a coin toss
+	// between the real angle and the fake one -- and aiming off the fake one
+	// feeds straight back into the next tick.
+	float real_yaw   = le.get_yaw();
+	float real_pitch = le.get_pitch();
+	enhance::modules::aiming::tick_movement_hook::true_rotation(real_yaw, real_pitch);
 
 	const enhance::modules::killaura::TargetFilter filter{
 		globals::killaura_target_players,

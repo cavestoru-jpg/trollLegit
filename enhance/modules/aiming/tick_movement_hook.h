@@ -53,4 +53,13 @@ namespace enhance::modules::aiming::tick_movement_hook
 	// has to work that out from scratch will assume it is a bug, so the query
 	// exists to make the relationship explicit.
 	bool is_swapping();
+
+	// The player's rotation with no swap applied, as last seen by the tick thread.
+	// False when nothing has run recently enough for the answer to be meaningful --
+	// in which case the live field is honest and can be read directly.
+	//
+	// The worker MUST use this rather than sampling the field: the hooks hold the
+	// silent angle in it for the length of a tick, so a live read is a coin toss
+	// between the real angle and the fake one.
+	bool true_rotation(float& yaw, float& pitch);
 }
