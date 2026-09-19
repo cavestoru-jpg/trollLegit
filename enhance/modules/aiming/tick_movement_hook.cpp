@@ -942,9 +942,25 @@ static void hkTick(JNIEnv* env, jobject thiz)
 	// packet from getYaw(), so the server is told the fake angle, and travel()
 	// is inside it too, so the body moves along the same angle the server was
 	// told. Verified against the bytecode of client-intermediary.jar.
+	float dbg_pre_last_yaw = 0.0f, dbg_post_last_yaw = 0.0f;
+	float dbg_pre_last_pitch = 0.0f, dbg_post_last_pitch = 0.0f;
+	if (swapped && globals::aiming_debug_log && player && g_fid_last_yaw)
+	{
+		dbg_pre_last_yaw = env->GetFloatField(player, g_fid_last_yaw);
+		if (g_fid_last_pitch) dbg_pre_last_pitch = env->GetFloatField(player, g_fid_last_pitch);
+		if (env->ExceptionCheck()) env->ExceptionClear();
+	}
+
 	if (ORIG_tick && g_mc_class && thiz)
 	{
 		env->CallNonvirtualVoidMethod(thiz, g_mc_class, ORIG_tick);
+		if (env->ExceptionCheck()) env->ExceptionClear();
+	}
+
+	if (swapped && globals::aiming_debug_log && player && g_fid_last_yaw)
+	{
+		dbg_post_last_yaw = env->GetFloatField(player, g_fid_last_yaw);
+		if (g_fid_last_pitch) dbg_post_last_pitch = env->GetFloatField(player, g_fid_last_pitch);
 		if (env->ExceptionCheck()) env->ExceptionClear();
 	}
 
@@ -958,11 +974,7 @@ static void hkTick(JNIEnv* env, jobject thiz)
 		//
 		// ClientPlayerEntity overrides getYaw(tickDelta) to return the raw
 		// field for the local player, so the view direction comes straight from
-		// these two -- restore them and the player's own view never moved.
-		// lastYaw/lastPitch are the previous-tick pair the renderer interpolates
-		// from; Entity.tick assigns them from getYaw()/getPitch(), which is the
-		// fake value at that moment, so they need the offset taken back out or
-		// the view sweeps between fake and real every frame.
+		// it -- restore it and the player's own view never moved.
 		// Restore the OFFSET, not the old value.
 		//
 		// MinecraftClient.tick also processes mouse input, and turning is
@@ -980,14 +992,30 @@ static void hkTick(JNIEnv* env, jobject thiz)
 		env->CallVoidMethod(player, g_mid_set_yaw, after - dy);
 		if (env->ExceptionCheck()) env->ExceptionClear();
 
-		if (g_fid_last_yaw)
-			env->SetFloatField(player, g_fid_last_yaw,
-				env->GetFloatField(player, g_fid_last_yaw) - dy);
-		if (env->ExceptionCheck()) env->ExceptionClear();
+		// yRotO / xRotO are deliberately left alone, and this is the whole of the
+		// violent shaking.
+		//
+		// They used to have the offset taken back out of them here, on the belief
+		// that the tick had copied the faked angle into them. It does not. The
+		// copy is Entity.setOldRot, reached through setOldPosAndRot from
+		// Entity.commonTick -- and ClientLevel.tickNonPassenger calls commonTick
+		// BEFORE it calls tick(), so the pair is stamped with the REAL rotation
+		// before this hook ever applies the fake:
+		//
+		//   ClientLevel.tickNonPassenger(entity):
+		//       entity.commonTick()   -- yRotO = yRot, still honest
+		//       entity.tick()         -- this hook, where the fake goes in
+		//
+		// Subtracting the offset from an honest value corrupts it by exactly that
+		// offset, every tick. The camera interpolates lerp(partial, yRotO, yRot),
+		// so the view swept up to 180 degrees between the silent angle and the
+		// real one -- and LivingEntity.tick's +/-180 wrap fixup dragged it back
+		// into range each tick, which is why the corrupted value always sat just
+		// under half a turn away instead of running off to infinity.
+		//
+		// Verified on 26.3 by reading the bytecode of Entity.setOldRot(FF)V
+		// (a bare yRotO = a; xRotO = b), its call chain, and LivingEntity.tick.
 
-		// Pitch gets the same treatment, for the same reason: Entity.tick
-		// copies getPitch() into lastPitch, which is the fake value while we
-		// hold it, and the renderer interpolates the view from that pair.
 		if (dpitch != 0.0f && g_mid_get_pitch && g_mid_set_pitch)
 		{
 			float after_pitch = env->CallFloatMethod(player, g_mid_get_pitch);
@@ -996,13 +1024,6 @@ static void hkTick(JNIEnv* env, jobject thiz)
 
 			env->CallVoidMethod(player, g_mid_set_pitch, after_pitch - dpitch);
 			if (env->ExceptionCheck()) env->ExceptionClear();
-
-			if (g_fid_last_pitch)
-			{
-				env->SetFloatField(player, g_fid_last_pitch,
-					env->GetFloatField(player, g_fid_last_pitch) - dpitch);
-				if (env->ExceptionCheck()) env->ExceptionClear();
-			}
 		}
 
 		// renderYaw / renderPitch drive the FIRST-PERSON hand: HeldItemRenderer
@@ -1025,6 +1046,34 @@ static void hkTick(JNIEnv* env, jobject thiz)
 				if (env->ExceptionCheck()) env->ExceptionClear();
 			}
 		}
+		// pre  -- what yRotO held going in, corrected at the end of last tick
+		// post -- what the tick left there, which the restore assumes is the fake
+		// out  -- what the camera will interpolate from for the next 50 ms
+		if (globals::aiming_debug_log && player && g_fid_last_yaw)
+		{
+			static ULONGLONG s_next = 0;
+			const ULONGLONG now = GetTickCount64();
+			if (now >= s_next)
+			{
+				s_next = now + 500;
+				const float out_last_yaw = env->GetFloatField(player, g_fid_last_yaw);
+				const float out_last_pitch =
+					g_fid_last_pitch ? env->GetFloatField(player, g_fid_last_pitch) : 0.0f;
+				const float out_yaw = env->CallFloatMethod(player, g_mid_get_yaw);
+				if (env->ExceptionCheck()) env->ExceptionClear();
+
+				char line[320];
+				sprintf_s(line, sizeof(line),
+					"[tickrot] saved %.1f fake %.1f dy %.1f dp %.1f | yRotO pre %.1f post %.1f out %.1f"
+					" | xRotO pre %.1f post %.1f out %.1f | yRot out %.1f",
+					saved_yaw, fake_yaw, dyaw, dpitch,
+					dbg_pre_last_yaw, dbg_post_last_yaw, out_last_yaw,
+					dbg_pre_last_pitch, dbg_post_last_pitch, out_last_pitch,
+					out_yaw);
+				logger::log(line);
+			}
+		}
+
 		if (dpitch != 0.0f && g_fid_render_pitch)
 		{
 			const float r = env->GetFloatField(player, g_fid_render_pitch);
