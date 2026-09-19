@@ -484,7 +484,11 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		for (const auto& sw : g_siblings)
 		{
 			if (sw.hwnd == hWnd)
-				return CallWindowProcW(sw.original, hWnd, msg, wParam, lParam);
+				// Unicode or ANSI is a property of the window, and calling the
+				// wrong one mangles character messages.
+				return IsWindowUnicode(hWnd)
+					? CallWindowProcW(sw.original, hWnd, msg, wParam, lParam)
+					: CallWindowProcA(sw.original, hWnd, msg, wParam, lParam);
 		}
 		return DefWindowProcW(hWnd, msg, wParam, lParam);
 	}
