@@ -30,6 +30,27 @@ jdouble hkGetEntityInteractionRange(JNIEnv *env, jobject thiz)
 	return 3.0;
 }
 
+// 1.20 - 1.20.4: MultiPlayerGameMode.getPickRange(), a float on a different
+// class. A native registered with the wrong return kind does not fail at attach
+// -- the JVM reads a value that was never pushed -- so this shape gets its own
+// callback and the bound descriptor decides which one is installed.
+jfloat hkGetPickRange(JNIEnv *env, jobject thiz)
+{
+	if (g_reach_override > 0.0)
+	{
+		return static_cast<jfloat>(g_reach_override);
+	}
+
+	if (ORIG_getEntityInteractionRange && thiz && g_player_entity_class)
+	{
+		return env->CallNonvirtualFloatMethod(thiz, g_player_entity_class, ORIG_getEntityInteractionRange);
+	}
+
+	// Vanilla survival block reach. Whatever this returns when the original is
+	// unavailable should at least not shorten the player's arm.
+	return 4.5f;
+}
+
 static bool jnihook_initialized = false;
 
 bool enhance::modules::reach_hook::init()
@@ -72,24 +93,46 @@ bool enhance::modules::reach_hook::init()
 		jnihook_initialized = true;
 	}
 
-	jclass player_entity_class = sdk::classloader::find_class(env, sdk::mappings::player_entity_class_sig);
-	if (!player_entity_class)
-	{
+	// Two mechanisms, one per era: the interaction-range attribute from 1.20.5 on,
+	// and MultiPlayerGameMode.getPickRange before it. They live on different
+	// classes and return different types, so both the owner and the callback come
+	// from what actually resolved.
+	const bool use_attribute = sdk::mappings::have(sdk::mappings::get_entity_interaction_range_name);
+	const char* symbol = use_attribute ? "get_entity_interaction_range" : "pick_range";
+	const char* method_name = use_attribute ? sdk::mappings::get_entity_interaction_range_name
+	                                        : sdk::mappings::pick_range_name;
+	const char* method_sig = use_attribute ? sdk::mappings::get_entity_interaction_range_sig
+	                                       : sdk::mappings::pick_range_sig;
+	void* callback = use_attribute ? reinterpret_cast<void*>(hkGetEntityInteractionRange)
+	                               : reinterpret_cast<void*>(hkGetPickRange);
 
+	if (!sdk::mappings::have(method_name))
+	{
+		g_unavailable_reason = "neither the interaction-range attribute nor getPickRange resolves here";
 		return false;
 	}
 
-	jmethodID method_id = env->GetMethodID(player_entity_class, 
-		sdk::mappings::get_entity_interaction_range_name, 
-		sdk::mappings::get_entity_interaction_range_sig);
-	
+	const char* owner = sdk::mappings::owner_of(symbol);
+	jclass player_entity_class = sdk::mappings::have(owner)
+		? sdk::classloader::find_class(env, owner) : nullptr;
+	if (!player_entity_class)
+	{
+		g_unavailable_reason = std::string("class not found: ") +
+			(sdk::mappings::have(owner) ? owner : "<unresolved>");
+		return false;
+	}
+
+	jmethodID method_id = env->GetMethodID(player_entity_class, method_name, method_sig);
+	if (env->ExceptionCheck()) env->ExceptionClear();
+
 	if (!method_id)
 	{
+		g_unavailable_reason = std::string("method not found: ") + owner + "." + method_name;
 		env->DeleteLocalRef(player_entity_class);
 		return false;
 	}
 
-	jnihook_result_t result = JNIHook_Attach(method_id, reinterpret_cast<void*>(hkGetEntityInteractionRange), &ORIG_getEntityInteractionRange);
+	jnihook_result_t result = JNIHook_Attach(method_id, callback, &ORIG_getEntityInteractionRange);
 	if (result == JNIHOOK_OK) g_hooked_mid = method_id;
 	if (result != JNIHOOK_OK)
 	{

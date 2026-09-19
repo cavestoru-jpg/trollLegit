@@ -896,6 +896,12 @@ namespace sdk
 		extern const char* living_renderer_render_name;
 		extern const char* living_renderer_render_sig;
 
+		// MultiPlayerGameMode.getPickRange -- the interaction distance before
+		// 1.20.5 introduced the entity_interaction_range attribute. Returns a
+		// float where the attribute getter returns a double.
+		extern const char* pick_range_name;
+		extern const char* pick_range_sig;
+
 		// Storage ESP matches a block state's block against these parent
 		// classes. They used to be hardcoded intermediary names, which meant the
 		// module could only ever work under Fabric.

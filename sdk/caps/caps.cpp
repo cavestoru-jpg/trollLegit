@@ -37,6 +37,9 @@ namespace sdk
 				  "a rotation-only teleport packet, which the server only sends from 1.21.2 on" },
 				{ feature::riptide,       { "trident_on_stopped_using", nullptr },
 				  "TridentItem.onStoppedUsing in a shape this client can hook" },
+				// Either era will do: the attribute from 1.20.5, getPickRange before it.
+				{ feature::reach,         { "pick_range", nullptr },
+				  "MultiPlayerGameMode.getPickRange" },
 				{ feature::reach,         { "get_entity_interaction_range", nullptr },
 				  "the entity interaction range attribute (1.20.5+)" },
 				// Either way of writing the slot will do. sdk/minecraft/player

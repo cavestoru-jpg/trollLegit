@@ -401,5 +401,15 @@
     "emit_name": "vec3i_get_z_name",
     "emit_sig": "vec3i_get_z_sig",
     "why": "BlockPos extends Vec3i; this is how a block entity's coordinates are read"
+  },
+  "pick_range": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/client/multiplayer/MultiPlayerGameMode",
+    "name": "getPickRange",
+    "desc": "()F",
+    "emit_name": "pick_range_name",
+    "emit_sig": "pick_range_sig",
+    "why": "where the interaction distance comes from before 1.20.5, which replaced it with the entity_interaction_range attribute. Returns float, not double, so the hook needs its own callback"
   }
 }
