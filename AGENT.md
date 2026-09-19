@@ -205,6 +205,27 @@ Things that cost time here:
 - **A failed attach used to say only `failed=8`.** `JNIHook_LastErrorDetail()` now carries the
   Java exception's `toString()`, which is what turned the above from a guess into a fix.
 - Attach from the **client thread**, not the worker (`enhance::client_thread::post`).
+- **A JVMTI callback must never return with an exception pending.** `ClassFileLoadHook`
+  fires for *every* class the JVM loads, and on an ordinary load `class_being_redefined` is
+  null -- it is non-null only during redefinition or retransformation. `get_class_name` called
+  `CallObjectMethod` on that null, which throws `NullPointerException`; the caller checked only
+  the return value and left the exception pending on the thread. The VM then returned into
+  `ClassLoader.defineClass1` and reported it as that method's own failure:
+
+  ```
+  java.lang.NullPointerException
+      at java.base/java.lang.ClassLoader.defineClass1(Native Method)
+      ...
+      at net.minecraft.client.renderer.MapRenderer.render
+  ```
+
+  Nothing in that trace points at us. The hook is only enabled around `RetransformClasses`,
+  but several modules retry their attaches on a timer, so the window reopens every few
+  seconds for the whole session, and any class another thread happens to load inside it is
+  poisoned. Usually something swallows it -- the first-person hand quietly stopped rendering
+  -- and occasionally it lands somewhere that crashes the game. The upstream comment above
+  the disable call had already guessed this ("possibly NullPointerException in
+  JNIHook_ClassFileLoadHook") without finding it.
 - **Do not hook `Camera`.** Attaching to `Camera.alignWithEntity` on 26.3 attached cleanly,
   logged one frame, and then killed the process:
 

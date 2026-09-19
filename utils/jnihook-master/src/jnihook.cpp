@@ -235,6 +235,11 @@ get_class_signature(jvmtiEnv *jvmti, jclass clazz)
 static std::string
 get_class_name(JNIEnv *env, jclass clazz)
 {
+        // Calling getName() on nothing throws, and a caller that only checks the
+        // return value leaves that exception pending on the thread.
+        if (!clazz)
+                return "";
+
         jclass klass = env->FindClass("java/lang/Class");
         if (!klass)
                 return "";
@@ -297,7 +302,22 @@ void JNICALL JNIHook_ClassFileLoadHook(jvmtiEnv *jvmti_env,
                                        jint* new_class_data_len,
                                        unsigned char** new_class_data)
 {
+        // An ordinary class load has nothing being redefined, and this hook has
+        // nothing to say about one: it exists to catch the bytes of a class on
+        // its way through RedefineClasses. Returning here also keeps the common
+        // case free -- this runs for every class the JVM ever loads.
+        if (class_being_redefined == nullptr)
+                return;
+
         auto class_name = get_class_name(jni_env, class_being_redefined);
+
+        // Whatever happened above, this callback must not hand the VM back a
+        // thread with an exception pending. It returns into whatever was loading
+        // the class -- ClassLoader.defineClass1 for an ordinary load -- which
+        // reports it as its own failure, and a NullPointerException from
+        // defineClass1 looks nothing like a JVMTI callback misbehaving.
+        if (jni_env->ExceptionCheck())
+                jni_env->ExceptionClear();
 
         if (g_probe_active && class_name == g_probe_class) {
                 g_probe_seen = true;
