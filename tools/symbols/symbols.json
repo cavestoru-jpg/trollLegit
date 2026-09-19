@@ -2546,6 +2546,28 @@
       "class": "net/minecraft/world/level/block/CrafterBlock"
     },
     {
+      "id": "custom_geometry_render",
+      "kind": "method",
+      "emit_name": "custom_geometry_render_name",
+      "emit_sig": "custom_geometry_render_sig",
+      "seed": {
+        "why": "the callback the proxy implements. Byte-identical on all seven versions, which is what makes one implementation cover the whole new branch"
+      },
+      "owner": "net/minecraft/client/renderer/SubmitNodeCollector$CustomGeometryRenderer",
+      "name": "render",
+      "desc": "(Lcom/mojang/blaze3d/vertex/PoseStack$Pose;Lcom/mojang/blaze3d/vertex/VertexConsumer;)V"
+    },
+    {
+      "id": "custom_geometry_renderer_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "custom_geometry_renderer_class_sig",
+      "seed": {
+        "why": "the game's own extension point for foreign geometry. A single-method interface, so it is implementable with java.lang.reflect.Proxy -- the same way the Fabric world render event is subscribed to today"
+      },
+      "class": "net/minecraft/client/renderer/SubmitNodeCollector$CustomGeometryRenderer"
+    },
+    {
       "id": "dispenser_block_class",
       "kind": "class",
       "emit_name": null,
@@ -2600,6 +2622,30 @@
       "class": "net/minecraft/world/level/block/HopperBlock"
     },
     {
+      "id": "level_renderer_submit_features",
+      "kind": "method",
+      "emit_name": "level_renderer_submit_features_name",
+      "emit_sig": "level_renderer_submit_features_sig",
+      "seed": {
+        "why": "a candidate for WHEN to submit: it is handed the collector as its second argument, so a hook lands at exactly the right moment. Sodium and Iris both mix into LevelRenderer but both target renderLevel, not this -- which is also why the old JNIHook on renderLevel blanked the world. Only exists from 26.2; earlier versions in this era need another entry point"
+      },
+      "owner": "net/minecraft/client/renderer/LevelRenderer",
+      "name": "submitFeatures",
+      "desc": "(Lnet/minecraft/client/renderer/state/level/LevelRenderState;Lnet/minecraft/client/renderer/SubmitNodeCollector;Z)V"
+    },
+    {
+      "id": "level_renderer_submit_node_storage",
+      "kind": "field",
+      "emit_name": "level_renderer_submit_node_storage_name",
+      "emit_sig": "level_renderer_submit_node_storage_sig",
+      "seed": {
+        "why": "a plain field read reaches the storage -- no hook, no redefinition, and identical on all seven versions that have it"
+      },
+      "owner": "net/minecraft/client/renderer/LevelRenderer",
+      "name": "submitNodeStorage",
+      "desc": "Lnet/minecraft/client/renderer/SubmitNodeStorage;"
+    },
+    {
       "id": "living_renderer_render",
       "kind": "method",
       "emit_name": "living_renderer_render_name",
@@ -2619,6 +2665,16 @@
       ]
     },
     {
+      "id": "ordered_submit_collector_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "ordered_submit_collector_class_sig",
+      "seed": {
+        "why": "what order(int) hands back, and what actually carries the submit* methods"
+      },
+      "class": "net/minecraft/client/renderer/OrderedSubmitNodeCollector"
+    },
+    {
       "id": "pick_range",
       "kind": "method",
       "emit_name": "pick_range_name",
@@ -2631,6 +2687,63 @@
       "desc": "()F"
     },
     {
+      "id": "render_type_debug_filled_box",
+      "kind": "field",
+      "emit_name": "render_type_debug_filled_box_name",
+      "emit_sig": "render_type_debug_filled_box_sig",
+      "seed": {
+        "why": "filled box faces"
+      },
+      "owner": "net/minecraft/client/renderer/rendertype/RenderTypes",
+      "name": "DEBUG_FILLED_BOX",
+      "desc": "Lnet/minecraft/client/renderer/rendertype/RenderType;",
+      "versions": [
+        {
+          "until": "1.21.10",
+          "owner": "net/minecraft/client/renderer/RenderType",
+          "desc": "Lnet/minecraft/client/renderer/RenderType;",
+          "why": "statics lived on RenderType before the split"
+        }
+      ]
+    },
+    {
+      "id": "render_type_lines",
+      "kind": "field",
+      "emit_name": "render_type_lines_name",
+      "emit_sig": "render_type_lines_sig",
+      "seed": {
+        "why": "box edges"
+      },
+      "owner": "net/minecraft/client/renderer/rendertype/RenderTypes",
+      "name": "LINES",
+      "desc": "Lnet/minecraft/client/renderer/rendertype/RenderType;",
+      "versions": [
+        {
+          "until": "1.21.10",
+          "owner": "net/minecraft/client/renderer/RenderType",
+          "desc": "Lnet/minecraft/client/renderer/RenderType;",
+          "why": "statics lived on RenderType before the split"
+        }
+      ]
+    },
+    {
+      "id": "render_types_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "render_types_class_sig",
+      "seed": {
+        "why": "holder for the named render types. Before 1.21.11 they were statics on RenderType itself"
+      },
+      "class": "net/minecraft/client/renderer/rendertype/RenderTypes",
+      "versions": [
+        {
+          "until": "1.21.10",
+          "class": "net/minecraft/client/renderer/RenderType",
+          "why": "the split into RenderType + RenderTypes happened in 1.21.11"
+        }
+      ]
+    },
+    {
       "id": "shulker_box_block_class",
       "kind": "class",
       "emit_name": null,
@@ -2639,6 +2752,57 @@
         "why": "storage ESP matches block states against this parent class: shulker boxes"
       },
       "class": "net/minecraft/world/level/block/ShulkerBoxBlock"
+    },
+    {
+      "id": "submit_custom_geometry",
+      "kind": "method",
+      "emit_name": "submit_custom_geometry_name",
+      "emit_sig": "submit_custom_geometry_sig",
+      "seed": {
+        "why": "the one call the in-world ESP needs. Geometry goes in through the game's own VertexConsumer, so whichever backend is live -- OpenGL or Vulkan -- draws it, and the client never names either"
+      },
+      "owner": "net/minecraft/client/renderer/OrderedSubmitNodeCollector",
+      "name": "submitCustomGeometry",
+      "desc": "(Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/rendertype/RenderType;Lnet/minecraft/client/renderer/SubmitNodeCollector$CustomGeometryRenderer;)V",
+      "versions": [
+        {
+          "until": "1.21.10",
+          "desc": "(Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/RenderType;Lnet/minecraft/client/renderer/SubmitNodeCollector$CustomGeometryRenderer;)V",
+          "why": "RenderType only moved into the rendertype package in 1.21.11"
+        }
+      ]
+    },
+    {
+      "id": "submit_node_collector_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "submit_node_collector_class_sig",
+      "seed": {
+        "why": "the interface SubmitNodeStorage implements; what order() is called on"
+      },
+      "class": "net/minecraft/client/renderer/SubmitNodeCollector"
+    },
+    {
+      "id": "submit_node_order",
+      "kind": "method",
+      "emit_name": "submit_node_order_name",
+      "emit_sig": "submit_node_order_sig",
+      "seed": {
+        "why": "picks the draw order bucket; unchanged across the whole era"
+      },
+      "owner": "net/minecraft/client/renderer/SubmitNodeCollector",
+      "name": "order",
+      "desc": "(I)Lnet/minecraft/client/renderer/OrderedSubmitNodeCollector;"
+    },
+    {
+      "id": "submit_node_storage_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "submit_node_storage_class_sig",
+      "seed": {
+        "why": "where the frame's geometry is queued before it is drained by phase. Held by LevelRenderer in a field, so it is reachable without hooking anything"
+      },
+      "class": "net/minecraft/client/renderer/SubmitNodeStorage"
     },
     {
       "id": "swing_animation_class",
