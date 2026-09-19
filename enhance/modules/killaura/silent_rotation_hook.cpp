@@ -280,18 +280,15 @@ bool enhance::modules::silent_rotation_hook::init()
 	{
 		g_mid_get_yaw   = env->GetMethodID(entity_cls, sdk::mappings::entity_get_yaw_name, sdk::mappings::entity_get_yaw_sig);
 		if (env->ExceptionCheck()) { env->ExceptionClear(); g_mid_get_yaw = nullptr; }
-		// NOTE: mappings.hpp's entity_get_pitch_sig is "(F)F" which would be
-		// `getPitch(float)` — that's actually the tick-delta variant. The
-		// no-arg getPitch() in 1.21 is method_36455. We try that first; if
-		// it fails, fall back to method_5695()F. Both can't coexist so the
-		// fallback path is just defensive.
-		g_mid_get_pitch = env->GetMethodID(entity_cls, "method_36455", "()F");
+		// entity_get_pitch is getViewXRot(F)F, the interpolated variant, so the
+		// pitch as it stands has a symbol of its own. It used to be named here
+		// by hand in intermediary, which resolved nothing on 26.x or on vanilla
+		// -- and a null getter means every pitch delta is measured from zero.
+		g_mid_get_pitch = sdk::mappings::have(sdk::mappings::entity_get_pitch_noarg_name)
+			? env->GetMethodID(entity_cls, sdk::mappings::entity_get_pitch_noarg_name,
+			                   sdk::mappings::entity_get_pitch_noarg_sig)
+			: nullptr;
 		if (env->ExceptionCheck()) { env->ExceptionClear(); g_mid_get_pitch = nullptr; }
-		if (!g_mid_get_pitch)
-		{
-			g_mid_get_pitch = env->GetMethodID(entity_cls, "method_5695", "()F");
-			if (env->ExceptionCheck()) { env->ExceptionClear(); g_mid_get_pitch = nullptr; }
-		}
 
 		g_mid_set_yaw   = env->GetMethodID(entity_cls, sdk::mappings::entity_set_yaw_name, sdk::mappings::entity_set_yaw_sig);
 		if (env->ExceptionCheck()) { env->ExceptionClear(); g_mid_set_yaw = nullptr; }

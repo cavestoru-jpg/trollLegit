@@ -896,6 +896,12 @@ namespace sdk
 		extern const char* living_renderer_render_name;
 		extern const char* living_renderer_render_sig;
 
+		// Entity.getXRot() -- the pitch as it stands. entity_get_pitch is the
+		// (F)F tick-delta variant, which is a different question and the reason
+		// the rotation hooks used to name this one by hand.
+		extern const char* entity_get_pitch_noarg_name;
+		extern const char* entity_get_pitch_noarg_sig;
+
 		// Dye colour before 1.20.5: an interface method on the item, not the
 		// static component helper that replaced it.
 		extern const char* dyeable_item_class_sig;

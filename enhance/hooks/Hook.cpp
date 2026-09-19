@@ -8,6 +8,7 @@
 #include "../utils/logger.h"
 
 #include <atomic>
+#include <vector>
 
 typedef BOOL(__stdcall* TWglSwapBuffers) (HDC hDc);
 
@@ -51,6 +52,19 @@ static bool __stdcall wglSwapBuffers(HDC hDc);
 // Skips the invisible helpers every backend leaves lying around (the RenderPearl
 // utility window, the wgl dummy, IME windows) by requiring a visible window with
 // a title and a real size.
+// Windows this process owns besides the main one. SDL keeps hidden helpers
+// that receive input messages, so the menu can only swallow input if they are
+// subclassed too. Each original is kept so shutdown can put it back.
+struct sibling_window
+{
+	HWND    hwnd;
+	WNDPROC original;
+};
+static std::vector<sibling_window> g_siblings;
+
+static void subclass_sibling_windows();
+static void restore_sibling_windows();
+
 static HWND find_own_window()
 {
 	struct search
@@ -83,6 +97,46 @@ static HWND find_own_window()
 	}, reinterpret_cast<LPARAM>(&state));
 
 	return state.best;
+}
+
+static void subclass_sibling_windows()
+{
+	struct collect
+	{
+		DWORD pid;
+		HWND  main_window;
+	} state{ GetCurrentProcessId(), wnd_handle };
+
+	EnumWindows([](HWND hwnd, LPARAM param) -> BOOL
+	{
+		auto* st = reinterpret_cast<collect*>(param);
+
+		DWORD pid = 0;
+		GetWindowThreadProcessId(hwnd, &pid);
+		if (pid != st->pid || hwnd == st->main_window)
+			return TRUE;
+
+		WNDPROC current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+		if (!current || current == WndProc)
+			return TRUE;
+
+		SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)WndProc);
+		g_siblings.push_back({ hwnd, current });
+		return TRUE;
+	}, reinterpret_cast<LPARAM>(&state));
+}
+
+static void restore_sibling_windows()
+{
+	for (const auto& sw : g_siblings)
+	{
+		if (IsWindow(sw.hwnd) &&
+		    (WNDPROC)GetWindowLongPtrW(sw.hwnd, GWLP_WNDPROC) == WndProc)
+		{
+			SetWindowLongPtrW(sw.hwnd, GWLP_WNDPROC, (LONG_PTR)sw.original);
+		}
+	}
+	g_siblings.clear();
 }
 
 bool Hook::init()
@@ -138,6 +192,13 @@ bool Hook::init()
 		}
 
 		SetWindowLongPtrW(wnd_handle, GWLP_WNDPROC, (LONG_PTR)WndProc);
+
+		// And every other window this process owns. SDL -- which 26.3 uses
+		// instead of GLFW -- keeps hidden helper windows beside the visible
+		// one and delivers wheel and raw input through them, so filtering
+		// only the window the player sees let the scroll wheel reach the
+		// hotbar while the menu was open.
+		subclass_sibling_windows();
 	}
 
 	{
@@ -200,6 +261,7 @@ void Hook::shutdown()
 			if (origin_wndproc && origin_wndproc != WndProc)
 			{
 				SetWindowLongPtrW(wnd_handle, GWLP_WNDPROC, (LONG_PTR)origin_wndproc);
+		restore_sibling_windows();
 				g_wndproc_restored = true;
 			}
 			// else: our procedure is installed but the original was never
@@ -413,6 +475,18 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 				return TRUE;
 			}
 		}
+	}
+
+	// Each window has its own original: handing a sibling's message to the
+	// main window's procedure would deliver it to the wrong place.
+	if (hWnd != wnd_handle)
+	{
+		for (const auto& sw : g_siblings)
+		{
+			if (sw.hwnd == hWnd)
+				return CallWindowProcW(sw.original, hWnd, msg, wParam, lParam);
+		}
+		return DefWindowProcW(hWnd, msg, wParam, lParam);
 	}
 
 	return CallWindowProcA(origin_wndproc, hWnd, msg, wParam, lParam);

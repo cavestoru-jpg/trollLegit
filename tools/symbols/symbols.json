@@ -2571,6 +2571,18 @@
       "class": "net/minecraft/world/item/DyeableLeatherItem"
     },
     {
+      "id": "entity_get_pitch_noarg",
+      "kind": "method",
+      "emit_name": "entity_get_pitch_noarg_name",
+      "emit_sig": "entity_get_pitch_noarg_sig",
+      "seed": {
+        "why": "the pitch as it stands, not interpolated. entity_get_pitch is getViewXRot(F)F, the tick-delta variant, which is why two hooks used to name the no-arg getter by hand in intermediary -- and therefore resolved nothing at all on 26.x or vanilla"
+      },
+      "owner": "net/minecraft/world/entity/Entity",
+      "name": "getXRot",
+      "desc": "()F"
+    },
+    {
       "id": "hopper_block_class",
       "kind": "class",
       "emit_name": null,

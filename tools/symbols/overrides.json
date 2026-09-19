@@ -428,5 +428,15 @@
     "emit_name": "dyeable_get_color_name",
     "emit_sig": "dyeable_get_color_sig",
     "why": "reads the dye colour off the item itself; replaced in 1.20.5 by the static DyedItemColor helper, which is why this is an instance call and that one is static"
+  },
+  "entity_get_pitch_noarg": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/world/entity/Entity",
+    "name": "getXRot",
+    "desc": "()F",
+    "emit_name": "entity_get_pitch_noarg_name",
+    "emit_sig": "entity_get_pitch_noarg_sig",
+    "why": "the pitch as it stands, not interpolated. entity_get_pitch is getViewXRot(F)F, the tick-delta variant, which is why two hooks used to name the no-arg getter by hand in intermediary -- and therefore resolved nothing at all on 26.x or vanilla"
   }
 }

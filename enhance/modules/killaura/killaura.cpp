@@ -12,6 +12,7 @@
 #include "../../hooks/Hook.h"
 #include "../../utils/client_thread.h"
 #include "../../utils/logger.h"
+#include "../../gui/GUI.h"
 
 #include <sdk/minecraft/minecraft.h>
 #include <sdk/minecraft/entity/entity.h>
@@ -228,6 +229,14 @@ void enhance::modules::killaura::run()
 	// has no focus gate) worked on the same target. That one wrong handle is why
 	// killaura never rotated.
 	const HWND wnd = Hook::get_window();
+	// The menu is a screen: attacking through it is the same mistake as
+	// aiming through it.
+	if (GUI::get_is_init() && GUI::get_do_draw())
+	{
+		blocked("menu open");
+		return;
+	}
+
 	if (!wnd || GetForegroundWindow() != wnd)
 	{
 		reset();

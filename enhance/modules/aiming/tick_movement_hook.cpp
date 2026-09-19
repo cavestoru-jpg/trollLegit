@@ -7,6 +7,7 @@
 #include "../../enhance.h"
 #include "../../globals/globals.h"
 #include "../../utils/logger.h"
+#include "../../gui/GUI.h"
 #include <sdk/mappings/mappings.hpp>
 #include <sdk/classloader.h>
 #include <sdk/compat/compat.h>
@@ -146,6 +147,12 @@ namespace
 	// applied to the player's current rotation, else inactive.
 	silent_angles_t resolve_silent_angles(JNIEnv* env, jobject player)
 	{
+		// The menu is a screen, not an overlay. While it is open the player is
+		// not playing, and an aim that keeps tracking turns the view under a
+		// cursor being used for something else.
+		if (GUI::get_is_init() && GUI::get_do_draw())
+			return {};
+
 		// Also consulted when silent aim itself is off: killaura publishes into
 		// the same channel, and gating on silent_aim_enabled would compute its
 		// rotation and then discard it.
@@ -1045,22 +1052,21 @@ bool enhance::modules::aiming::tick_movement_hook::init()
 			sdk::mappings::entity_set_yaw_name, sdk::mappings::entity_set_yaw_sig);
 		if (env->ExceptionCheck()) { env->ExceptionClear(); g_mid_set_yaw = nullptr; }
 
-		// Pitch is optional: movement only needs yaw, so a missing accessor
-		// costs us the vertical half of the silent look rather than the
-		// feature. mappings.hpp's entity_get_pitch_sig is the (F)F tick-delta
-		// variant, so the no-arg getter is named directly here -- the same
-		// workaround silent_rotation_hook uses.
-		g_mid_get_pitch = env->GetMethodID(entity_cls, "method_36455", "()F");
+		// The pitch as it stands. entity_get_pitch is getViewXRot(F)F, the
+		// interpolated variant, which is a different question -- hence a symbol
+		// of its own rather than the two hardcoded intermediary names that used
+		// to be here. Those resolved nothing on 26.x and on vanilla, so
+		// saved_pitch stayed 0 and every pitch delta was computed against a
+		// fictitious zero: the view was thrown tens of degrees each tick and
+		// dragged back, which is what "it shakes violently" was.
+		g_mid_get_pitch = sdk::mappings::have(sdk::mappings::entity_get_pitch_noarg_name)
+			? env->GetMethodID(entity_cls, sdk::mappings::entity_get_pitch_noarg_name,
+			                   sdk::mappings::entity_get_pitch_noarg_sig)
+			: nullptr;
 		if (env->ExceptionCheck()) { env->ExceptionClear(); g_mid_get_pitch = nullptr; }
 		if (!g_mid_get_pitch)
-		{
-			// Same fallback silent_rotation_hook carries. Without a pitch
-			// getter saved_pitch stays 0, and the manager then computes every
-			// pitch delta -- and its release test -- against a fictitious
-			// pitch of zero, so the walk-back can never converge.
-			g_mid_get_pitch = env->GetMethodID(entity_cls, "method_5695", "()F");
-			if (env->ExceptionCheck()) { env->ExceptionClear(); g_mid_get_pitch = nullptr; }
-		}
+			logger::log_error("[aiming] no-arg pitch getter unresolved -- the silent pitch "
+			                  "would be computed against zero, so pitch is left alone");
 
 		g_mid_set_pitch = env->GetMethodID(entity_cls,
 			sdk::mappings::entity_set_pitch_name, sdk::mappings::entity_set_pitch_sig);
