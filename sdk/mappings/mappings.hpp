@@ -880,6 +880,26 @@ namespace sdk
 		extern const char* vertex_set_normal_name;
 		extern const char* vertex_set_normal_sig;
 
+		// What a render type wants per vertex. Asked rather than assumed: a vertex
+		// short of an element makes BufferBuilder.build() throw from inside the
+		// game's own drain, after our callback has returned, where nothing here can
+		// catch it. Element names are Position, Color, Normal, UV0..UV3.
+		extern const char* render_type_format_name;
+		extern const char* render_type_format_sig;
+		extern const char* vertex_format_get_elements_name;
+		extern const char* vertex_format_get_elements_sig;
+		extern const char* vertex_format_element_name_name;
+		extern const char* vertex_format_element_name_sig;
+
+		extern const char* vertex_set_line_width_name;
+		extern const char* vertex_set_line_width_sig;
+		extern const char* vertex_set_uv_name;
+		extern const char* vertex_set_uv_sig;
+		extern const char* vertex_set_uv1_name;
+		extern const char* vertex_set_uv1_sig;
+		extern const char* vertex_set_uv2_name;
+		extern const char* vertex_set_uv2_sig;
+
 		// Entity.lastRenderX / lastRenderY / lastRenderZ — the positions the
 		// game interpolates from when it draws a frame between two ticks.
 		// Without these the boxes sit on the raw tick position and step at

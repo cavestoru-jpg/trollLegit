@@ -1463,6 +1463,136 @@ namespace
 		return global;
 	}
 
+	// Element bits, mirrored in EnhanceRenderer.
+	constexpr int k_elem_color = 1;
+	constexpr int k_elem_normal = 2;
+	constexpr int k_elem_uv0 = 4;
+	constexpr int k_elem_uv1 = 8;
+	constexpr int k_elem_uv2 = 16;
+	constexpr int k_elem_line_width = 32;
+
+	// What this render type declares per vertex, or false with the offending
+	// name logged.
+	//
+	// The names come from the format itself rather than from a table here,
+	// because a table is a guess and a guess costs a crash: a vertex missing an
+	// element makes BufferBuilder.build() throw from inside the drain, after the
+	// callback has returned.
+	bool describe_format(JNIEnv* env, jobject render_type, const char* what, int& out_mask)
+	{
+		out_mask = 0;
+		if (!render_type)
+			return false;
+
+		// Resolved earlier in init(), but this walks a java.util.List and a null
+		// method id here would be a crash rather than a missing feature.
+		if (!g_mid_list_size || !g_mid_list_get)
+			return false;
+
+		if (!sdk::mappings::have(sdk::mappings::render_type_format_name) ||
+		    !sdk::mappings::have(sdk::mappings::vertex_format_element_name_name))
+		{
+			logger::log(std::string("[world_render] cannot read the vertex format on this "
+			                        "version, so ") + what + " stays off");
+			return false;
+		}
+
+		jclass rt_cls = env->GetObjectClass(render_type);
+		jmethodID mid_format = rt_cls
+			? env->GetMethodID(rt_cls, sdk::mappings::render_type_format_name,
+			                   sdk::mappings::render_type_format_sig)
+			: nullptr;
+		clear_exception(env);
+		if (rt_cls)
+			env->DeleteLocalRef(rt_cls);
+		if (!mid_format)
+			return false;
+
+		jobject fmt = env->CallObjectMethod(render_type, mid_format);
+		clear_exception(env);
+		if (!fmt)
+			return false;
+
+		jclass fmt_cls = env->GetObjectClass(fmt);
+		jmethodID mid_elems = fmt_cls
+			? env->GetMethodID(fmt_cls, sdk::mappings::vertex_format_get_elements_name,
+			                   sdk::mappings::vertex_format_get_elements_sig)
+			: nullptr;
+		clear_exception(env);
+		if (fmt_cls)
+			env->DeleteLocalRef(fmt_cls);
+
+		jobject list = mid_elems ? env->CallObjectMethod(fmt, mid_elems) : nullptr;
+		clear_exception(env);
+		env->DeleteLocalRef(fmt);
+		if (!list)
+			return false;
+
+		const jint count = env->CallIntMethod(list, g_mid_list_size);
+		clear_exception(env);
+
+		std::string seen;
+		bool ok = true;
+
+		for (jint i = 0; i < count && ok; ++i)
+		{
+			jobject el = env->CallObjectMethod(list, g_mid_list_get, i);
+			clear_exception(env);
+			if (!el)
+				continue;
+
+			jclass el_cls = env->GetObjectClass(el);
+			jmethodID mid_name = el_cls
+				? env->GetMethodID(el_cls, sdk::mappings::vertex_format_element_name_name,
+				                   sdk::mappings::vertex_format_element_name_sig)
+				: nullptr;
+			clear_exception(env);
+			if (el_cls)
+				env->DeleteLocalRef(el_cls);
+
+			jstring js = mid_name ? (jstring)env->CallObjectMethod(el, mid_name) : nullptr;
+			clear_exception(env);
+			env->DeleteLocalRef(el);
+			if (!js)
+			{
+				ok = false;
+				break;
+			}
+
+			const char* raw = env->GetStringUTFChars(js, nullptr);
+			const std::string name = raw ? raw : "";
+			if (raw)
+				env->ReleaseStringUTFChars(js, raw);
+			env->DeleteLocalRef(js);
+
+			seen += (seen.empty() ? "" : ", ") + name;
+
+			if      (name == "Position")  { /* always, through addVertex */ }
+			else if (name == "Color")     out_mask |= k_elem_color;
+			else if (name == "Normal")    out_mask |= k_elem_normal;
+			else if (name == "UV0" || name == "UV") out_mask |= k_elem_uv0;
+			else if (name == "UV1")       out_mask |= k_elem_uv1;
+			else if (name == "UV2")       out_mask |= k_elem_uv2;
+			else if (name.find("Width") != std::string::npos ||
+			         name.find("width") != std::string::npos) out_mask |= k_elem_line_width;
+			else
+			{
+				// Do not draw rather than find out the hard way. The name is
+				// printed because it is the one thing needed to support it.
+				logger::log_error("[world_render] " + std::string(what) +
+				                  " wants a vertex element this client cannot fill: '" +
+				                  name + "' -- that half is off. Format: " + seen);
+				ok = false;
+			}
+		}
+
+		env->DeleteLocalRef(list);
+
+		if (ok)
+			logger::log("[world_render] " + std::string(what) + " vertex format: " + seen);
+		return ok;
+	}
+
 	// Calls a RenderTypes factory once and keeps what it returns.
 	jobject resolve_render_type(JNIEnv* env, jclass types, const char* name, const char* sig)
 	{
@@ -1548,6 +1678,7 @@ namespace
 		// method names are obfuscated -- only this side has the mappings.
 		jmethodID bind = env->GetStaticMethodID(g_renderer_class, "bindVertexApi",
 			"(Ljava/lang/Class;Ljava/lang/Class;Ljava/lang/String;Ljava/lang/String;"
+			"Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
 			"Ljava/lang/String;)Z");
 		g_mid_stage_geometry = env->GetStaticMethodID(g_renderer_class, "stageGeometry",
 			"(Ljava/nio/ByteBuffer;II)V");
@@ -1559,15 +1690,23 @@ namespace
 			return false;
 		}
 
+		// A name this version does not have goes over as empty: the Java side
+		// treats those setters as optional and only a format that actually asks
+		// for the element makes it matter.
+		auto name_or_empty = [](const char* n) { return sdk::mappings::have(n) ? n : ""; };
+
 		jstring s_add = env->NewStringUTF(sdk::mappings::vertex_add_vertex_name);
 		jstring s_col = env->NewStringUTF(sdk::mappings::vertex_set_color_name);
 		jstring s_nrm = env->NewStringUTF(sdk::mappings::vertex_set_normal_name);
+		jstring s_lw  = env->NewStringUTF(name_or_empty(sdk::mappings::vertex_set_line_width_name));
+		jstring s_uv  = env->NewStringUTF(name_or_empty(sdk::mappings::vertex_set_uv_name));
+		jstring s_uv1 = env->NewStringUTF(name_or_empty(sdk::mappings::vertex_set_uv1_name));
+		jstring s_uv2 = env->NewStringUTF(name_or_empty(sdk::mappings::vertex_set_uv2_name));
 		const jboolean bound = env->CallStaticBooleanMethod(g_renderer_class, bind,
-			consumer_cls, pose_cls, s_add, s_col, s_nrm);
+			consumer_cls, pose_cls, s_add, s_col, s_nrm, s_lw, s_uv, s_uv1, s_uv2);
 		report_exception(env, "EnhanceRenderer.bindVertexApi");
-		env->DeleteLocalRef(s_add);
-		env->DeleteLocalRef(s_col);
-		env->DeleteLocalRef(s_nrm);
+		for (jstring js : { s_add, s_col, s_nrm, s_lw, s_uv, s_uv1, s_uv2 })
+			env->DeleteLocalRef(js);
 
 		if (bound != JNI_TRUE)
 		{
@@ -1575,6 +1714,57 @@ namespace
 			                  "right for this version but the reflection lookup failed");
 			return false;
 		}
+
+		// What each half's render type actually declares. A half whose format
+		// cannot be filled is switched off here rather than on the frame that
+		// would have crashed the game.
+		int mask_tris = 0, mask_lines = 0;
+		if (g_rt_tris && !describe_format(env, g_rt_tris, "filled boxes", mask_tris))
+		{
+			env->DeleteGlobalRef(g_rt_tris);
+			g_rt_tris = nullptr;
+		}
+		if (g_rt_lines && !describe_format(env, g_rt_lines, "box edges", mask_lines))
+		{
+			env->DeleteGlobalRef(g_rt_lines);
+			g_rt_lines = nullptr;
+		}
+
+		jmethodID can_fill = env->GetStaticMethodID(g_renderer_class, "canFill", "(I)Z");
+		jmethodID set_masks = env->GetStaticMethodID(g_renderer_class, "setElementMasks", "(II)V");
+		clear_exception(env);
+		if (!can_fill || !set_masks)
+		{
+			logger::log("[world_render] this JVM holds an older EnhanceRenderer without the "
+			            "format-aware emitter -- restart the game to pick up the new one");
+			return false;
+		}
+
+		if (g_rt_tris && env->CallStaticBooleanMethod(g_renderer_class, can_fill, mask_tris) != JNI_TRUE)
+		{
+			logger::log_error("[world_render] no setter bound for something the filled-box "
+			                  "format wants -- that half is off");
+			env->DeleteGlobalRef(g_rt_tris);
+			g_rt_tris = nullptr;
+		}
+		if (g_rt_lines && env->CallStaticBooleanMethod(g_renderer_class, can_fill, mask_lines) != JNI_TRUE)
+		{
+			logger::log_error("[world_render] no setter bound for something the line format "
+			                  "wants -- that half is off");
+			env->DeleteGlobalRef(g_rt_lines);
+			g_rt_lines = nullptr;
+		}
+		clear_exception(env);
+
+		if (!g_rt_tris && !g_rt_lines)
+		{
+			logger::log_error("[world_render] neither half can be drawn through the game's "
+			                  "renderer on this version");
+			return false;
+		}
+
+		env->CallStaticVoidMethod(g_renderer_class, set_masks, mask_tris, mask_lines);
+		clear_exception(env);
 
 		g_proxy_tris = make_proxy(env, cgr_cls, 1);    // KIND_SUBMIT_TRIS
 		g_proxy_lines = make_proxy(env, cgr_cls, 2);   // KIND_SUBMIT_LINES

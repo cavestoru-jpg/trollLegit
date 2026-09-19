@@ -2833,6 +2833,32 @@
       ]
     },
     {
+      "id": "render_type_format",
+      "kind": "method",
+      "emit_name": "render_type_format_name",
+      "emit_sig": "render_type_format_sig",
+      "seed": {
+        "why": "what a render type actually wants per vertex. Guessing it cost a crash: BufferBuilder.build throws IllegalStateException(\"Missing elements in vertex\") from inside the game's own drain, where no catch of ours can reach it"
+      },
+      "owner": "net/minecraft/client/renderer/rendertype/RenderType",
+      "name": "format",
+      "desc": "()Lcom/mojang/renderpearl/api/vertex/VertexFormat;",
+      "versions": [
+        {
+          "until": "1.21.10",
+          "owner": "net/minecraft/client/renderer/RenderType",
+          "desc": "()Lcom/mojang/blaze3d/vertex/VertexFormat;",
+          "why": "RenderType only moved into the rendertype package in 1.21.11"
+        },
+        {
+          "since": "1.21.11",
+          "until": "26.2",
+          "desc": "()Lcom/mojang/blaze3d/vertex/VertexFormat;",
+          "why": "new RenderType package, but VertexFormat only moved to renderpearl in 26.3"
+        }
+      ]
+    },
+    {
       "id": "render_type_lines",
       "kind": "method",
       "emit_name": "render_type_lines_name",
@@ -3045,6 +3071,45 @@
       "class": "com/mojang/blaze3d/vertex/VertexConsumer"
     },
     {
+      "id": "vertex_format_element_name",
+      "kind": "method",
+      "emit_name": "vertex_format_element_name_name",
+      "emit_sig": "vertex_format_element_name_sig",
+      "seed": {
+        "why": "Position, Color, Normal, UV0..UV3 -- what each element is. Only from 26.2: before that the elements are identified by static instances instead, which is a different mechanism and is why the submit path stays off on those versions"
+      },
+      "owner": "com/mojang/renderpearl/api/vertex/VertexFormatElement",
+      "name": "name",
+      "desc": "()Ljava/lang/String;",
+      "versions": [
+        {
+          "since": "26.2",
+          "until": "26.2",
+          "owner": "com/mojang/blaze3d/vertex/VertexFormatElement",
+          "why": "still under blaze3d on 26.2"
+        }
+      ]
+    },
+    {
+      "id": "vertex_format_get_elements",
+      "kind": "method",
+      "emit_name": "vertex_format_get_elements_name",
+      "emit_sig": "vertex_format_get_elements_sig",
+      "seed": {
+        "why": "the elements the format declares, in order"
+      },
+      "owner": "com/mojang/renderpearl/api/vertex/VertexFormat",
+      "name": "getElements",
+      "desc": "()Ljava/util/List;",
+      "versions": [
+        {
+          "until": "26.2",
+          "owner": "com/mojang/blaze3d/vertex/VertexFormat",
+          "why": "VertexFormat moved into renderpearl in 26.3"
+        }
+      ]
+    },
+    {
       "id": "vertex_set_color",
       "kind": "method",
       "emit_name": "vertex_set_color_name",
@@ -3057,6 +3122,18 @@
       "desc": "(IIII)Lcom/mojang/blaze3d/vertex/VertexConsumer;"
     },
     {
+      "id": "vertex_set_line_width",
+      "kind": "method",
+      "emit_name": "vertex_set_line_width_name",
+      "emit_sig": "vertex_set_line_width_sig",
+      "seed": {
+        "why": "line render types carry a width element; not filling it is exactly what crashed"
+      },
+      "owner": "com/mojang/blaze3d/vertex/VertexConsumer",
+      "name": "setLineWidth",
+      "desc": "(F)Lcom/mojang/blaze3d/vertex/VertexConsumer;"
+    },
+    {
       "id": "vertex_set_normal",
       "kind": "method",
       "emit_name": "vertex_set_normal_name",
@@ -3067,6 +3144,42 @@
       "owner": "com/mojang/blaze3d/vertex/VertexConsumer",
       "name": "setNormal",
       "desc": "(Lcom/mojang/blaze3d/vertex/PoseStack$Pose;FFF)Lcom/mojang/blaze3d/vertex/VertexConsumer;"
+    },
+    {
+      "id": "vertex_set_uv",
+      "kind": "method",
+      "emit_name": "vertex_set_uv_name",
+      "emit_sig": "vertex_set_uv_sig",
+      "seed": {
+        "why": "texture coordinates"
+      },
+      "owner": "com/mojang/blaze3d/vertex/VertexConsumer",
+      "name": "setUv",
+      "desc": "(FF)Lcom/mojang/blaze3d/vertex/VertexConsumer;"
+    },
+    {
+      "id": "vertex_set_uv1",
+      "kind": "method",
+      "emit_name": "vertex_set_uv1_name",
+      "emit_sig": "vertex_set_uv1_sig",
+      "seed": {
+        "why": "the overlay coordinate"
+      },
+      "owner": "com/mojang/blaze3d/vertex/VertexConsumer",
+      "name": "setUv1",
+      "desc": "(II)Lcom/mojang/blaze3d/vertex/VertexConsumer;"
+    },
+    {
+      "id": "vertex_set_uv2",
+      "kind": "method",
+      "emit_name": "vertex_set_uv2_name",
+      "emit_sig": "vertex_set_uv2_sig",
+      "seed": {
+        "why": "the lightmap coordinate"
+      },
+      "owner": "com/mojang/blaze3d/vertex/VertexConsumer",
+      "name": "setUv2",
+      "desc": "(II)Lcom/mojang/blaze3d/vertex/VertexConsumer;"
     },
     {
       "id": "channel_read0",

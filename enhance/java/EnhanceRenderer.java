@@ -70,6 +70,35 @@ public final class EnhanceRenderer implements InvocationHandler {
     private static Method mAddVertex;   // (Pose, float, float, float) -> VertexConsumer
     private static Method mSetColor;    // (int, int, int, int)        -> VertexConsumer
     private static Method mSetNormal;   // (Pose, float, float, float) -> VertexConsumer
+    private static Method mSetLineWidth; // (float)                    -> VertexConsumer
+    private static Method mSetUv;       // (float, float)              -> VertexConsumer
+    private static Method mSetUv1;      // (int, int)                  -> VertexConsumer
+    private static Method mSetUv2;      // (int, int)                  -> VertexConsumer
+
+    /**
+     * Which elements a render type declares. The native side reads them off the
+     * format itself and passes them here as a mask; this class fills exactly
+     * those and nothing else.
+     *
+     * Guessing is not survivable: a vertex short of an element makes
+     * BufferBuilder.build() throw from inside the game's own drain, long after
+     * this callback has returned, where no catch here can reach it.
+     */
+    public static final int ELEM_COLOR = 1;
+    public static final int ELEM_NORMAL = 2;
+    public static final int ELEM_UV0 = 4;
+    public static final int ELEM_UV1 = 8;
+    public static final int ELEM_UV2 = 16;
+    public static final int ELEM_LINE_WIDTH = 32;
+
+    private static int trisElements;
+    private static int linesElements;
+
+    /** Full-bright, so the boxes do not take the world's lighting. */
+    private static final int FULL_BRIGHT = 15;
+
+    /** Tuned by eye; only ever sent when the format actually asks for it. */
+    private static final float LINE_WIDTH = 2.0f;
 
     // The staged geometry the submit callbacks read. Published once per frame,
     // before submitting, and read back during the drain.
@@ -183,7 +212,9 @@ public final class EnhanceRenderer implements InvocationHandler {
      *         rather than failing later, inside a frame.
      */
     public static boolean bindVertexApi(Class<?> consumerClass, Class<?> poseClass,
-                                        String addVertex, String setColor, String setNormal) {
+                                        String addVertex, String setColor, String setNormal,
+                                        String setLineWidth, String setUv,
+                                        String setUv1, String setUv2) {
         try {
             mAddVertex = consumerClass.getMethod(addVertex, poseClass,
                                                  float.class, float.class, float.class);
@@ -191,6 +222,10 @@ public final class EnhanceRenderer implements InvocationHandler {
                                                 int.class, int.class, int.class, int.class);
             mSetNormal = consumerClass.getMethod(setNormal, poseClass,
                                                  float.class, float.class, float.class);
+            mSetLineWidth = optional(consumerClass, setLineWidth, float.class);
+            mSetUv = optional(consumerClass, setUv, float.class, float.class);
+            mSetUv1 = optional(consumerClass, setUv1, int.class, int.class);
+            mSetUv2 = optional(consumerClass, setUv2, int.class, int.class);
             return true;
         } catch (Throwable t) {
             mAddVertex = null;
@@ -198,6 +233,40 @@ public final class EnhanceRenderer implements InvocationHandler {
             mSetNormal = null;
             return false;
         }
+    }
+
+    /**
+     * Not every version has every setter -- setLineWidth arrives in 1.21.11.
+     * A missing one is only fatal if a format actually asks for that element,
+     * which the native side checks before enabling the render type.
+     */
+    private static Method optional(Class<?> owner, String name, Class<?>... args) {
+        if (name == null || name.isEmpty()) {
+            return null;
+        }
+        try {
+            return owner.getMethod(name, args);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** Which elements each half's render type declares. */
+    public static void setElementMasks(int tris, int lines) {
+        trisElements = tris;
+        linesElements = lines;
+    }
+
+    /** Whether every element in the mask has a setter bound. */
+    public static boolean canFill(int mask) {
+        if (mAddVertex == null || mSetColor == null) {
+            return false;
+        }
+        return ((mask & ELEM_NORMAL) == 0 || mSetNormal != null)
+            && ((mask & ELEM_UV0) == 0 || mSetUv != null)
+            && ((mask & ELEM_UV1) == 0 || mSetUv1 != null)
+            && ((mask & ELEM_UV2) == 0 || mSetUv2 != null)
+            && ((mask & ELEM_LINE_WIDTH) == 0 || mSetLineWidth != null);
     }
 
     /** Publishes this frame's geometry for the submit callbacks to read. */
@@ -228,7 +297,8 @@ public final class EnhanceRenderer implements InvocationHandler {
      * a renderer that never names OpenGL or Vulkan: whichever backend the game
      * is running draws this, because the consumer is the game's own.
      */
-    private static void emit(Object pose, Object consumer, int first, int count, boolean lines) {
+    private static void emit(Object pose, Object consumer, int first, int count,
+                             boolean lines, int elements) {
         final ByteBuffer buf = submitBuffer;
         if (buf == null || mAddVertex == null || count <= 0) {
             return;
@@ -244,18 +314,39 @@ public final class EnhanceRenderer implements InvocationHandler {
 
                 mAddVertex.invoke(consumer, pose, Float.valueOf(x), Float.valueOf(y),
                                   Float.valueOf(z));
-                mSetColor.invoke(consumer,
-                                 Integer.valueOf(channel(buf.getFloat(base + 12))),
-                                 Integer.valueOf(channel(buf.getFloat(base + 16))),
-                                 Integer.valueOf(channel(buf.getFloat(base + 20))),
-                                 Integer.valueOf(channel(buf.getFloat(base + 24))));
 
-                if (lines) {
+                if ((elements & ELEM_COLOR) != 0) {
+                    mSetColor.invoke(consumer,
+                                     Integer.valueOf(channel(buf.getFloat(base + 12))),
+                                     Integer.valueOf(channel(buf.getFloat(base + 16))),
+                                     Integer.valueOf(channel(buf.getFloat(base + 20))),
+                                     Integer.valueOf(channel(buf.getFloat(base + 24))));
+                }
+                if ((elements & ELEM_UV0) != 0) {
+                    mSetUv.invoke(consumer, Float.valueOf(0.0f), Float.valueOf(0.0f));
+                }
+                if ((elements & ELEM_UV1) != 0) {
+                    mSetUv1.invoke(consumer, Integer.valueOf(0), Integer.valueOf(10));
+                }
+                if ((elements & ELEM_UV2) != 0) {
+                    mSetUv2.invoke(consumer, Integer.valueOf(FULL_BRIGHT),
+                                   Integer.valueOf(FULL_BRIGHT));
+                }
+                if ((elements & ELEM_LINE_WIDTH) != 0) {
+                    mSetLineWidth.invoke(consumer, Float.valueOf(LINE_WIDTH));
+                }
+
+                if ((elements & ELEM_NORMAL) != 0) {
                     // The line render type carries a normal and the game reads it
                     // as the segment's direction, which is what gives the line its
                     // width. Vertices arrive in pairs, so both ends of a segment
                     // take the direction of the pair they belong to.
-                    final int mate = ((v & 1) == 0 ? (first + v + 1) : (first + v - 1)) * STRIDE;
+                    // For lines the normal is the segment direction. For a filled
+                    // shape the format rarely asks for one, and straight up is a
+                    // harmless answer if it does.
+                    final int mate = lines
+                        ? ((v & 1) == 0 ? (first + v + 1) : (first + v - 1)) * STRIDE
+                        : base;
                     float nx = buf.getFloat(mate) - x;
                     float ny = buf.getFloat(mate + 4) - y;
                     float nz = buf.getFloat(mate + 8) - z;
@@ -323,7 +414,8 @@ public final class EnhanceRenderer implements InvocationHandler {
                 emit(args[0], args[1],
                      lines ? submitTriVertices : 0,
                      lines ? submitLineVertices : submitTriVertices,
-                     lines);
+                     lines,
+                     lines ? linesElements : trisElements);
             }
             return null;
         }
