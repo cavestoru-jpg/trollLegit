@@ -3,8 +3,11 @@
 #include "../../enhance.h"
 #include "../../globals/globals.h"
 #include "../../utils/logger.h"
+#include "../../utils/client_thread.h"
 #include "../../java/enhance_renderer_class.hpp"
 #include "../killaura/friends.h"
+
+#include <jnihook.h>
 
 #include <imgui.h>
 
@@ -162,6 +165,32 @@ namespace
 	jclass    g_living_class = nullptr;       // GlobalRef
 	jmethodID g_mid_get_health = nullptr;
 	jmethodID g_mid_get_max_health = nullptr;
+
+	// --- the submit-node backend, 1.21.9 and later -----------------------
+	//
+	// From 1.21.9 the frame queues geometry into LevelRenderer's own storage and
+	// drains it by phase, and submitCustomGeometry is the game's declared way in
+	// for anyone else's. Everything here sits above the backend split, so the
+	// game draws our boxes on OpenGL or Vulkan without this client knowing which.
+	//
+	// It also needs no Fabric API, which the event route does, and no mod is
+	// disturbed: Sodium and Iris both mix into LevelRenderer, but into
+	// renderLevel -- the method the abandoned JNIHook took, and why the world
+	// went blank. Neither names submitEntities.
+	jclass    g_ordered_cls = nullptr;          // GlobalRef
+	jmethodID g_mid_order = nullptr;
+	jmethodID g_mid_submit_custom = nullptr;
+	jmethodID g_mid_stage_geometry = nullptr;
+	jobject   g_rt_lines = nullptr;             // GlobalRef
+	jobject   g_rt_tris = nullptr;              // GlobalRef
+	jobject   g_proxy_tris = nullptr;           // GlobalRef
+	jobject   g_proxy_lines = nullptr;          // GlobalRef
+	bool      g_submit_ready = false;
+
+	// Set only for the length of the submitEntities hook, which is the one moment
+	// the collector exists and the frame is taking entity geometry.
+	jobject   g_frame_pose = nullptr;
+	jobject   g_frame_collector = nullptr;
 
 	jmethodID g_renderer_render_text = nullptr;
 	jmethodID g_renderer_upload_font = nullptr;
@@ -1118,7 +1147,11 @@ namespace
 		if (!g_tris.empty() || !g_lines.empty())
 			submit_boxes(env, mvp);
 
-		submit_text(env, mvp);
+		// Tags are still the OpenGL text path. submitNameTag would draw them in the
+		// game's own font and its own phase, but its signature changes shape three
+		// times across this era, so it is a separate job from getting boxes drawn.
+		if (!g_frame_collector)
+			submit_text(env, mvp);
 
 		// One line, on the first frame that draws anything. The per-frame
 		// version of this was invaluable while the tags were coming out black,
@@ -1170,6 +1203,41 @@ namespace
 
 			if (!g_packed_buffer)
 				return;
+		}
+
+		// The game's own renderer, when this version has one to hand the vertices
+		// to. Two submissions because the triangle and line halves want different
+		// render types, and each carries its own proxy: a submitted node is drawn
+		// later, during the drain, so a shared flag set here would be stale by the
+		// time the callback reads it.
+		if (g_submit_ready && g_frame_collector && g_frame_pose)
+		{
+			env->CallStaticVoidMethod(g_renderer_class, g_mid_stage_geometry,
+				g_packed_buffer,
+				static_cast<jint>(g_tris.size() / k_floats_per_vertex),
+				static_cast<jint>(g_lines.size() / k_floats_per_vertex));
+			report_exception(env, "EnhanceRenderer.stageGeometry");
+
+			jobject ordered = env->CallObjectMethod(g_frame_collector, g_mid_order, 0);
+			report_exception(env, "SubmitNodeCollector.order");
+			if (!ordered)
+				return;
+
+			if (!g_tris.empty() && g_rt_tris)
+			{
+				env->CallVoidMethod(ordered, g_mid_submit_custom,
+				                    g_frame_pose, g_rt_tris, g_proxy_tris);
+				report_exception(env, "submitCustomGeometry(tris)");
+			}
+			if (!g_lines.empty() && g_rt_lines)
+			{
+				env->CallVoidMethod(ordered, g_mid_submit_custom,
+				                    g_frame_pose, g_rt_lines, g_proxy_lines);
+				report_exception(env, "submitCustomGeometry(lines)");
+			}
+
+			env->DeleteLocalRef(ordered);
+			return;
 		}
 
 		jfloatArray mvp_array = env->NewFloatArray(16);
@@ -1304,6 +1372,316 @@ namespace
 		}
 
 		return cls;
+	}
+
+	// --- the submit-node backend --------------------------------------------
+
+	jmethodID ORIG_submit_entities = nullptr;
+	jmethodID g_hooked_submit_entities = nullptr;
+	jmethodID g_submit_mid = nullptr;
+	bool      g_submit_attach_failed = false;
+	jclass    g_level_renderer_cls = nullptr;    // GlobalRef
+
+	// LevelRenderer.submitEntities. The frame is taking entity geometry and is
+	// holding the collector open; it is handed to us as the third argument,
+	// which is the whole reason this method was chosen over the alternatives.
+	void hkSubmitEntities(JNIEnv* env, jobject thiz, jobject pose_stack,
+	                      jobject state, jobject collector)
+	{
+		// The game's entities first. Ours are meant to sit over them, and
+		// submitting afterwards keeps that order within the bucket.
+		if (ORIG_submit_entities && g_level_renderer_cls && thiz)
+		{
+			env->CallNonvirtualVoidMethod(thiz, g_level_renderer_cls, ORIG_submit_entities,
+			                              pose_stack, state, collector);
+			if (env->ExceptionCheck())
+				env->ExceptionClear();
+		}
+
+		if (!g_submit_ready || !globals::esp_world_render_enabled)
+			return;
+
+		// submit_frame reads these instead of drawing, and they are only
+		// meaningful for the length of this call: the collector does not exist
+		// outside it, and the PoseStack is the frame's, not ours to keep.
+		g_frame_pose = pose_stack;
+		g_frame_collector = collector;
+		try { submit_frame(env); } catch (...) {}
+		g_frame_pose = nullptr;
+		g_frame_collector = nullptr;
+	}
+
+	// Proxy.newProxyInstance for a single-method interface, with a handler the
+	// Java side builds. The same shape as the Fabric event subscription below.
+	jobject make_proxy(JNIEnv* env, jclass iface, jint kind)
+	{
+		jclass class_cls = env->FindClass("java/lang/Class");
+		jclass proxy_cls = env->FindClass("java/lang/reflect/Proxy");
+		jclass handler_cls = env->FindClass("java/lang/reflect/InvocationHandler");
+		clear_exception(env);
+		if (!class_cls || !proxy_cls || !handler_cls)
+			return nullptr;
+
+		jmethodID get_loader = env->GetMethodID(class_cls, "getClassLoader",
+			"()Ljava/lang/ClassLoader;");
+		jmethodID new_proxy = env->GetStaticMethodID(proxy_cls, "newProxyInstance",
+			"(Ljava/lang/ClassLoader;[Ljava/lang/Class;"
+			"Ljava/lang/reflect/InvocationHandler;)Ljava/lang/Object;");
+		jmethodID mk_handler = env->GetStaticMethodID(g_renderer_class, "submitHandler",
+			"(I)Ljava/lang/Object;");
+		clear_exception(env);
+		if (!get_loader || !new_proxy || !mk_handler)
+			return nullptr;
+
+		jobject handler = env->CallStaticObjectMethod(g_renderer_class, mk_handler, kind);
+		clear_exception(env);
+		if (!handler)
+			return nullptr;
+
+		// The proxy class has to be defined in a loader that can see the
+		// interface, which is the game's, not ours.
+		jobject loader = env->CallObjectMethod(iface, get_loader);
+		clear_exception(env);
+
+		jobjectArray ifaces = env->NewObjectArray(1, class_cls, iface);
+		clear_exception(env);
+		if (!ifaces)
+			return nullptr;
+
+		jobject local = env->CallStaticObjectMethod(proxy_cls, new_proxy,
+		                                            loader, ifaces, handler);
+		report_exception(env, "Proxy.newProxyInstance(CustomGeometryRenderer)");
+
+		jobject global = local ? env->NewGlobalRef(local) : nullptr;
+		if (local)
+			env->DeleteLocalRef(local);
+		env->DeleteLocalRef(ifaces);
+		if (loader)
+			env->DeleteLocalRef(loader);
+		env->DeleteLocalRef(handler);
+		return global;
+	}
+
+	// Calls a RenderTypes factory once and keeps what it returns.
+	jobject resolve_render_type(JNIEnv* env, jclass types, const char* name, const char* sig)
+	{
+		if (!sdk::mappings::have(name))
+			return nullptr;
+
+		jmethodID mid = env->GetStaticMethodID(types, name, sig);
+		clear_exception(env);
+		if (!mid)
+			return nullptr;
+
+		jobject local = env->CallStaticObjectMethod(types, mid);
+		clear_exception(env);
+		if (!local)
+			return nullptr;
+
+		jobject global = env->NewGlobalRef(local);
+		env->DeleteLocalRef(local);
+		return global;
+	}
+
+	// Everything the submit path needs, or false and a reason.
+	bool init_submit_path(JNIEnv* env)
+	{
+		if (!sdk::mappings::have(sdk::mappings::submit_custom_geometry_name) ||
+		    !sdk::mappings::have(sdk::mappings::level_renderer_submit_entities_name))
+		{
+			logger::log("[world_render] no submit-node path on this version (it arrives in "
+			            "1.21.9) -- falling back to the Fabric event and OpenGL");
+			return false;
+		}
+
+		jclass collector_cls = sdk::classloader::find_class(env,
+			sdk::mappings::submit_node_collector_class_sig);
+		jclass ordered_cls = sdk::classloader::find_class(env,
+			sdk::mappings::ordered_submit_collector_class_sig);
+		jclass cgr_cls = sdk::classloader::find_class(env,
+			sdk::mappings::custom_geometry_renderer_class_sig);
+		jclass types_cls = sdk::classloader::find_class(env,
+			sdk::mappings::render_types_class_sig);
+		jclass consumer_cls = sdk::classloader::find_class(env,
+			sdk::mappings::vertex_consumer_class_sig);
+		jclass pose_cls = sdk::classloader::find_class(env,
+			sdk::mappings::pose_stack_pose_class_sig);
+		jclass lr_cls = sdk::classloader::find_class(env,
+			sdk::mappings::world_renderer_class_sig);
+
+		if (!collector_cls || !ordered_cls || !cgr_cls || !types_cls ||
+		    !consumer_cls || !pose_cls || !lr_cls)
+		{
+			logger::log_error("[world_render] the submit-node classes are named in the "
+			                  "mappings but did not resolve in this JVM");
+			return false;
+		}
+
+		g_mid_order = env->GetMethodID(collector_cls,
+			sdk::mappings::submit_node_order_name, sdk::mappings::submit_node_order_sig);
+		clear_exception(env);
+		g_mid_submit_custom = env->GetMethodID(ordered_cls,
+			sdk::mappings::submit_custom_geometry_name,
+			sdk::mappings::submit_custom_geometry_sig);
+		clear_exception(env);
+		if (!g_mid_order || !g_mid_submit_custom)
+		{
+			logger::log_error("[world_render] order() or submitCustomGeometry did not resolve");
+			return false;
+		}
+
+		g_rt_lines = resolve_render_type(env, types_cls,
+			sdk::mappings::render_type_lines_name, sdk::mappings::render_type_lines_sig);
+		g_rt_tris = resolve_render_type(env, types_cls,
+			sdk::mappings::render_type_debug_filled_box_name,
+			sdk::mappings::render_type_debug_filled_box_sig);
+		if (!g_rt_lines && !g_rt_tris)
+		{
+			logger::log_error("[world_render] neither render type resolved -- there would be "
+			                  "nothing to draw the geometry as");
+			return false;
+		}
+
+		// Hand the Java side the vertex API. It compiles against the JDK and
+		// LWJGL only, so it cannot name these types, and on a vanilla jar the
+		// method names are obfuscated -- only this side has the mappings.
+		jmethodID bind = env->GetStaticMethodID(g_renderer_class, "bindVertexApi",
+			"(Ljava/lang/Class;Ljava/lang/Class;Ljava/lang/String;Ljava/lang/String;"
+			"Ljava/lang/String;)Z");
+		g_mid_stage_geometry = env->GetStaticMethodID(g_renderer_class, "stageGeometry",
+			"(Ljava/nio/ByteBuffer;II)V");
+		clear_exception(env);
+		if (!bind || !g_mid_stage_geometry)
+		{
+			logger::log("[world_render] this JVM holds an older EnhanceRenderer without the "
+			            "submit entry points -- restart the game to pick up the new one");
+			return false;
+		}
+
+		jstring s_add = env->NewStringUTF(sdk::mappings::vertex_add_vertex_name);
+		jstring s_col = env->NewStringUTF(sdk::mappings::vertex_set_color_name);
+		jstring s_nrm = env->NewStringUTF(sdk::mappings::vertex_set_normal_name);
+		const jboolean bound = env->CallStaticBooleanMethod(g_renderer_class, bind,
+			consumer_cls, pose_cls, s_add, s_col, s_nrm);
+		report_exception(env, "EnhanceRenderer.bindVertexApi");
+		env->DeleteLocalRef(s_add);
+		env->DeleteLocalRef(s_col);
+		env->DeleteLocalRef(s_nrm);
+
+		if (bound != JNI_TRUE)
+		{
+			logger::log_error("[world_render] the vertex API did not bind -- the names are "
+			                  "right for this version but the reflection lookup failed");
+			return false;
+		}
+
+		g_proxy_tris = make_proxy(env, cgr_cls, 1);    // KIND_SUBMIT_TRIS
+		g_proxy_lines = make_proxy(env, cgr_cls, 2);   // KIND_SUBMIT_LINES
+		if (!g_proxy_tris || !g_proxy_lines)
+		{
+			logger::log_error("[world_render] could not build the custom-geometry proxies");
+			return false;
+		}
+
+		g_ordered_cls = (jclass)env->NewGlobalRef(ordered_cls);
+		g_level_renderer_cls = (jclass)env->NewGlobalRef(lr_cls);
+
+		g_submit_mid = env->GetMethodID(lr_cls,
+			sdk::mappings::level_renderer_submit_entities_name,
+			sdk::mappings::level_renderer_submit_entities_sig);
+		clear_exception(env);
+		if (!g_submit_mid)
+		{
+			logger::log_error("[world_render] LevelRenderer.submitEntities did not resolve");
+			return false;
+		}
+
+		return true;
+	}
+
+	// The attach itself, and the only part that may not run on the worker.
+	// A jmethodID is thread-safe once resolved, so it travels here from the
+	// resolve above.
+	bool attach_submit_entities()
+	{
+		if (!g_submit_mid)
+			return false;
+
+		const jnihook_result_t r = JNIHook_Attach(g_submit_mid,
+			reinterpret_cast<void*>(hkSubmitEntities), &ORIG_submit_entities);
+		if (r != JNIHOOK_OK)
+		{
+			char line[224];
+			sprintf_s(line, sizeof(line),
+			          "[world_render] hook on submitEntities failed=%d %s", (int)r,
+			          JNIHook_LastErrorDetail() ? JNIHook_LastErrorDetail() : "");
+			logger::log_error(line);
+			return false;
+		}
+
+		g_hooked_submit_entities = g_submit_mid;
+		g_submit_ready = true;
+		logger::log("[world_render] in-world geometry goes through the game's own renderer "
+		            "(submitCustomGeometry) -- no Fabric API needed, and whichever backend "
+		            "the game is running draws it");
+		return true;
+	}
+
+	enum class submit_state { pending, ready, unavailable };
+
+	// Resolve once on this thread, then queue the attach and wait for it. Three
+	// outcomes, because the caller must tell "not yet" from "never": falling back
+	// to the Fabric event while the attach is still in flight would subscribe to
+	// both and draw everything twice.
+	submit_state ensure_submit_path(JNIEnv* env)
+	{
+		static bool      s_resolved = false;
+		static bool      s_refused = false;
+		static bool      s_posted = false;
+		static ULONGLONG s_deadline = 0;
+
+		if (g_submit_ready)
+			return submit_state::ready;
+		if (s_refused)
+			return submit_state::unavailable;
+
+		if (!s_resolved)
+		{
+			if (!init_submit_path(env))
+			{
+				s_refused = true;
+				return submit_state::unavailable;
+			}
+			s_resolved = true;
+		}
+
+		if (!s_posted)
+		{
+			s_posted = true;
+			s_deadline = GetTickCount64() + 5000;
+			enhance::client_thread::post([]() {
+				if (!attach_submit_entities())
+					g_submit_attach_failed = true;
+			});
+		}
+
+		if (g_submit_attach_failed)
+		{
+			s_refused = true;
+			return submit_state::unavailable;
+		}
+
+		// The queue only drains on the client thread, so a game that is not
+		// drawing never runs it. Give up rather than block the feature forever.
+		if (GetTickCount64() > s_deadline)
+		{
+			logger::log_error("[world_render] the queued submitEntities attach never ran -- "
+			                  "falling back to the Fabric event");
+			s_refused = true;
+			return submit_state::unavailable;
+		}
+
+		return submit_state::pending;
 	}
 
 	bool register_event(JNIEnv* env)
@@ -1745,6 +2123,29 @@ bool enhance::modules::world_render_hook::init()
 		call_renderer_setter(env, "setActive", "(Z)V", v);
 	}
 
+	// --- How the frame is reached -------------------------------------------
+	//
+	// The submit path first where it exists: it needs no Fabric API, so it also
+	// covers a vanilla install, and it hands the geometry to the game rather than
+	// drawing it behind the game's back. The event route stays as the fallback
+	// for everything older.
+	switch (ensure_submit_path(env))
+	{
+	case submit_state::ready:
+		g_attached = true;
+		logger::log("[world_render] in-world Java renderer attached");
+		return true;
+
+	case submit_state::pending:
+		// Not a failure: the attach is queued for the client thread. Returning
+		// false has the caller try again next tick, which is what is wanted --
+		// what must NOT happen is falling through to the event route meanwhile.
+		return false;
+
+	case submit_state::unavailable:
+		break;
+	}
+
 	// --- Subscribe -----------------------------------------------------------
 	if (!register_event(env))
 	{
@@ -1770,6 +2171,45 @@ void enhance::modules::world_render_hook::shutdown()
 	g_attached = false;
 
 	auto env = enhance::instance ? enhance::instance->get_env() : nullptr;
+
+	// The submit path goes first and in this order: stop the hook from calling
+	// into us, then give the method back. A native method left bound to a module
+	// that is about to be unmapped is a crash on the next frame, not a leak.
+	g_submit_ready = false;
+	g_frame_pose = nullptr;
+	g_frame_collector = nullptr;
+
+	if (g_hooked_submit_entities)
+	{
+		const jnihook_result_t r = JNIHook_Detach(g_hooked_submit_entities);
+		logger::log(std::string("[unload] submitEntities detach result=") +
+		            std::to_string((int)r));
+		g_hooked_submit_entities = nullptr;
+		ORIG_submit_entities = nullptr;
+	}
+
+	if (env)
+	{
+		for (jobject* ref : { &g_rt_lines, &g_rt_tris, &g_proxy_tris, &g_proxy_lines })
+		{
+			if (*ref)
+			{
+				env->DeleteGlobalRef(*ref);
+				*ref = nullptr;
+			}
+		}
+		for (jclass* ref : { &g_ordered_cls, &g_level_renderer_cls })
+		{
+			if (*ref)
+			{
+				env->DeleteGlobalRef(*ref);
+				*ref = nullptr;
+			}
+		}
+	}
+	g_mid_order = nullptr;
+	g_mid_submit_custom = nullptr;
+	g_mid_stage_geometry = nullptr;
 
 	// The subscription cannot be undone — Fabric's Event has no unregister —
 	// so the listener has to be told to stand down instead. Order matters:

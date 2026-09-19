@@ -819,6 +819,62 @@ namespace sdk
 		extern const char* world_renderer_render_name;
 		extern const char* world_renderer_render_sig;
 
+		// The submit-node path, 1.21.9 and later.
+		//
+		// From 1.21.9 the frame no longer takes geometry immediately: it is queued
+		// into LevelRenderer's own SubmitNodeStorage and drained by phase. That is
+		// the route the in-world ESP takes, because everything below sits ABOVE the
+		// backend split -- blaze3d.{opengl,vulkan} on 26.2, renderpearl.backend.*
+		// on 26.3 -- so the game dispatches our geometry to whichever backend is
+		// live and this client never names OpenGL or Vulkan at all.
+		//
+		// Reaching the storage needs no hook: it is a field. The hook is only for
+		// WHEN, and it goes on submitEntities -- which neither Sodium nor Iris
+		// touches, unlike renderLevel above.
+		extern const char* submit_node_storage_class_sig;
+		extern const char* submit_node_collector_class_sig;
+		extern const char* ordered_submit_collector_class_sig;
+		extern const char* custom_geometry_renderer_class_sig;
+
+		extern const char* level_renderer_submit_node_storage_name;
+		extern const char* level_renderer_submit_node_storage_sig;
+		extern const char* level_renderer_submit_entities_name;
+		extern const char* level_renderer_submit_entities_sig;
+		extern const char* submit_node_order_name;
+		extern const char* submit_node_order_sig;
+		extern const char* submit_custom_geometry_name;
+		extern const char* submit_custom_geometry_sig;
+
+		// The callback the proxy implements: render(PoseStack$Pose, VertexConsumer).
+		// Byte-identical on every version that has it, which is what lets one
+		// implementation cover the whole branch.
+		extern const char* custom_geometry_render_name;
+		extern const char* custom_geometry_render_sig;
+
+		// Which bucket the geometry is drawn in. Taken from the factories rather
+		// than the LINES / DEBUG_FILLED_BOX statics: before 1.21.11 those fields
+		// are declared RenderType$CompositeRenderType, so their descriptor does not
+		// survive the package split, while the factories' return type does.
+		extern const char* render_types_class_sig;
+		extern const char* render_type_lines_name;
+		extern const char* render_type_lines_sig;
+		extern const char* render_type_debug_filled_box_name;
+		extern const char* render_type_debug_filled_box_sig;
+
+		// The game's own vertex sink, and the transform handed to the callback
+		// beside it. addVertex takes the pose overload so the geometry lands in the
+		// same space as everything else submitted that frame; setNormal is only
+		// needed for lines, whose render type reads the normal as the segment
+		// direction and uses it to give the line its width.
+		extern const char* vertex_consumer_class_sig;
+		extern const char* pose_stack_pose_class_sig;
+		extern const char* vertex_add_vertex_name;
+		extern const char* vertex_add_vertex_sig;
+		extern const char* vertex_set_color_name;
+		extern const char* vertex_set_color_sig;
+		extern const char* vertex_set_normal_name;
+		extern const char* vertex_set_normal_sig;
+
 		// Entity.lastRenderX / lastRenderY / lastRenderZ — the positions the
 		// game interpolates from when it draws a frame between two ticks.
 		// Without these the boxes sit on the raw tick position and step at

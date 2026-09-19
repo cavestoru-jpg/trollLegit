@@ -48,6 +48,35 @@ import org.lwjgl.opengl.GL33;
  */
 public final class EnhanceRenderer implements InvocationHandler {
 
+    /**
+     * Which job this handler instance has. One class serves three proxies: the
+     * Fabric world render event, and one each for the triangle and line halves
+     * of the submit-node path. The two submit proxies are separate instances
+     * because a submitted node is drawn later -- a flag set at submit time
+     * would already be stale by the time the callback runs.
+     */
+    public static final int KIND_WORLD_EVENT = 0;
+    public static final int KIND_SUBMIT_TRIS = 1;
+    public static final int KIND_SUBMIT_LINES = 2;
+
+    private final int kind;
+
+    // --- the game's vertex API, resolved by the native side ------------------
+    //
+    // This class compiles against the JDK and LWJGL only, so it cannot name
+    // VertexConsumer or PoseStack.Pose. Nor can it look the methods up by name
+    // itself: on a vanilla jar they are obfuscated, and only the native side
+    // holds the mappings. So it is handed both the classes and the names.
+    private static Method mAddVertex;   // (Pose, float, float, float) -> VertexConsumer
+    private static Method mSetColor;    // (int, int, int, int)        -> VertexConsumer
+    private static Method mSetNormal;   // (Pose, float, float, float) -> VertexConsumer
+
+    // The staged geometry the submit callbacks read. Published once per frame,
+    // before submitting, and read back during the drain.
+    private static ByteBuffer submitBuffer;
+    private static int submitTriVertices;
+    private static int submitLineVertices;
+
     /** x, y, z, r, g, b, a */
     private static final int FLOATS_PER_VERTEX = 7;
     private static final int STRIDE = FLOATS_PER_VERTEX * 4;
@@ -136,10 +165,126 @@ public final class EnhanceRenderer implements InvocationHandler {
      */
     private static volatile boolean active = false;
 
+    /** The Fabric world render listener. */
     public EnhanceRenderer() {
+        this(KIND_WORLD_EVENT);
+    }
+
+    private EnhanceRenderer(int kind) {
+        this.kind = kind;
     }
 
     /** Native entry point: collects the frame's boxes and draws them. */
+    /**
+     * Binds the game's vertex API. Called once from the native side, with the
+     * classes and the method names it resolved through the mappings.
+     *
+     * @return true when all three resolved; the submit path stays off otherwise
+     *         rather than failing later, inside a frame.
+     */
+    public static boolean bindVertexApi(Class<?> consumerClass, Class<?> poseClass,
+                                        String addVertex, String setColor, String setNormal) {
+        try {
+            mAddVertex = consumerClass.getMethod(addVertex, poseClass,
+                                                 float.class, float.class, float.class);
+            mSetColor = consumerClass.getMethod(setColor,
+                                                int.class, int.class, int.class, int.class);
+            mSetNormal = consumerClass.getMethod(setNormal, poseClass,
+                                                 float.class, float.class, float.class);
+            return true;
+        } catch (Throwable t) {
+            mAddVertex = null;
+            mSetColor = null;
+            mSetNormal = null;
+            return false;
+        }
+    }
+
+    /** Publishes this frame's geometry for the submit callbacks to read. */
+    public static void stageGeometry(ByteBuffer buffer, int triVertices, int lineVertices) {
+        submitBuffer = buffer;
+        submitTriVertices = triVertices;
+        submitLineVertices = lineVertices;
+    }
+
+    /** A proxy handler bound to one of the two submit ranges. */
+    public static Object submitHandler(int kind) {
+        return new EnhanceRenderer(kind);
+    }
+
+    private static int channel(float f) {
+        int v = (int) (f * 255.0f + 0.5f);
+        if (v < 0) {
+            v = 0;
+        }
+        return v > 255 ? 255 : v;
+    }
+
+    /**
+     * Feeds one range of the staged geometry to the game's vertex consumer.
+     *
+     * Two reflective calls per vertex, three for lines. At a few thousand
+     * vertices a frame that is well under a tenth of a millisecond, and it buys
+     * a renderer that never names OpenGL or Vulkan: whichever backend the game
+     * is running draws this, because the consumer is the game's own.
+     */
+    private static void emit(Object pose, Object consumer, int first, int count, boolean lines) {
+        final ByteBuffer buf = submitBuffer;
+        if (buf == null || mAddVertex == null || count <= 0) {
+            return;
+        }
+
+        try {
+            for (int v = 0; v < count; v++) {
+                final int base = (first + v) * STRIDE;
+
+                final float x = buf.getFloat(base);
+                final float y = buf.getFloat(base + 4);
+                final float z = buf.getFloat(base + 8);
+
+                mAddVertex.invoke(consumer, pose, Float.valueOf(x), Float.valueOf(y),
+                                  Float.valueOf(z));
+                mSetColor.invoke(consumer,
+                                 Integer.valueOf(channel(buf.getFloat(base + 12))),
+                                 Integer.valueOf(channel(buf.getFloat(base + 16))),
+                                 Integer.valueOf(channel(buf.getFloat(base + 20))),
+                                 Integer.valueOf(channel(buf.getFloat(base + 24))));
+
+                if (lines) {
+                    // The line render type carries a normal and the game reads it
+                    // as the segment's direction, which is what gives the line its
+                    // width. Vertices arrive in pairs, so both ends of a segment
+                    // take the direction of the pair they belong to.
+                    final int mate = ((v & 1) == 0 ? (first + v + 1) : (first + v - 1)) * STRIDE;
+                    float nx = buf.getFloat(mate) - x;
+                    float ny = buf.getFloat(mate + 4) - y;
+                    float nz = buf.getFloat(mate + 8) - z;
+                    if ((v & 1) == 1) {
+                        nx = -nx;
+                        ny = -ny;
+                        nz = -nz;
+                    }
+                    final float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+                    if (len > 1.0e-5f) {
+                        nx /= len;
+                        ny /= len;
+                        nz /= len;
+                    } else {
+                        nx = 0.0f;
+                        ny = 1.0f;
+                        nz = 0.0f;
+                    }
+                    mSetNormal.invoke(consumer, pose, Float.valueOf(nx), Float.valueOf(ny),
+                                      Float.valueOf(nz));
+                }
+            }
+        } catch (Throwable t) {
+            // Nothing may escape into the game's render pass: it would take the
+            // frame with it. Dropping the binding turns the path off instead.
+            mAddVertex = null;
+        }
+    }
+
     private static native void frame();
 
     /** Called from native code — see the fields above. */
@@ -165,7 +310,22 @@ public final class EnhanceRenderer implements InvocationHandler {
             return Boolean.valueOf(proxy == (args == null || args.length == 0 ? null : args[0]));
         }
         if ("toString".equals(name)) {
-            return "EnhanceRenderer$WorldRenderListener";
+            return kind == KIND_WORLD_EVENT
+                ? "EnhanceRenderer$WorldRenderListener"
+                : "EnhanceRenderer$SubmitGeometry";
+        }
+
+        // The submit proxies are stateless and have nothing to do with the
+        // Fabric listener's lifecycle, so they are dispatched ahead of its guards.
+        if (kind != KIND_WORLD_EVENT) {
+            if (args != null && args.length >= 2) {
+                final boolean lines = kind == KIND_SUBMIT_LINES;
+                emit(args[0], args[1],
+                     lines ? submitTriVertices : 0,
+                     lines ? submitLineVertices : submitTriVertices,
+                     lines);
+            }
+            return null;
         }
 
         if (!active || this != current) {

@@ -599,5 +599,49 @@
         "why": "LevelRenderState moved into the state/level package in 26.1"
       }
     ]
+  },
+  "vertex_consumer_class": {
+    "new": true,
+    "kind": "class",
+    "class": "com/mojang/blaze3d/vertex/VertexConsumer",
+    "emit_sig": "vertex_consumer_class_sig",
+    "why": "the game's own vertex sink. Handed to the custom-geometry callback, and the reason the in-world renderer needs no backend of its own"
+  },
+  "pose_stack_pose_class": {
+    "new": true,
+    "kind": "class",
+    "class": "com/mojang/blaze3d/vertex/PoseStack$Pose",
+    "emit_sig": "pose_stack_pose_class_sig",
+    "why": "the transform handed to the callback beside the consumer"
+  },
+  "vertex_add_vertex": {
+    "new": true,
+    "kind": "method",
+    "owner": "com/mojang/blaze3d/vertex/VertexConsumer",
+    "name": "addVertex",
+    "desc": "(Lcom/mojang/blaze3d/vertex/PoseStack$Pose;FFF)Lcom/mojang/blaze3d/vertex/VertexConsumer;",
+    "emit_name": "vertex_add_vertex_name",
+    "emit_sig": "vertex_add_vertex_sig",
+    "why": "position, transformed by the pose the callback was given. The pose overload rather than the bare one so the geometry lands in the same space as everything else submitted that frame"
+  },
+  "vertex_set_color": {
+    "new": true,
+    "kind": "method",
+    "owner": "com/mojang/blaze3d/vertex/VertexConsumer",
+    "name": "setColor",
+    "desc": "(IIII)Lcom/mojang/blaze3d/vertex/VertexConsumer;",
+    "emit_name": "vertex_set_color_name",
+    "emit_sig": "vertex_set_color_sig",
+    "why": "colour, 0-255 per channel"
+  },
+  "vertex_set_normal": {
+    "new": true,
+    "kind": "method",
+    "owner": "com/mojang/blaze3d/vertex/VertexConsumer",
+    "name": "setNormal",
+    "desc": "(Lcom/mojang/blaze3d/vertex/PoseStack$Pose;FFF)Lcom/mojang/blaze3d/vertex/VertexConsumer;",
+    "emit_name": "vertex_set_normal_name",
+    "emit_sig": "vertex_set_normal_sig",
+    "why": "the line render type carries a normal and reads it as the segment direction, which is what gives a line its width. Only needed for the line half"
   }
 }

@@ -2694,6 +2694,16 @@
       "desc": "()F"
     },
     {
+      "id": "pose_stack_pose_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "pose_stack_pose_class_sig",
+      "seed": {
+        "why": "the transform handed to the callback beside the consumer"
+      },
+      "class": "com/mojang/blaze3d/vertex/PoseStack$Pose"
+    },
+    {
       "id": "render_type_debug_filled_box",
       "kind": "method",
       "emit_name": "render_type_debug_filled_box_name",
@@ -2902,6 +2912,52 @@
       "owner": "net/minecraft/core/Vec3i",
       "name": "getZ",
       "desc": "()I"
+    },
+    {
+      "id": "vertex_add_vertex",
+      "kind": "method",
+      "emit_name": "vertex_add_vertex_name",
+      "emit_sig": "vertex_add_vertex_sig",
+      "seed": {
+        "why": "position, transformed by the pose the callback was given. The pose overload rather than the bare one so the geometry lands in the same space as everything else submitted that frame"
+      },
+      "owner": "com/mojang/blaze3d/vertex/VertexConsumer",
+      "name": "addVertex",
+      "desc": "(Lcom/mojang/blaze3d/vertex/PoseStack$Pose;FFF)Lcom/mojang/blaze3d/vertex/VertexConsumer;"
+    },
+    {
+      "id": "vertex_consumer_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "vertex_consumer_class_sig",
+      "seed": {
+        "why": "the game's own vertex sink. Handed to the custom-geometry callback, and the reason the in-world renderer needs no backend of its own"
+      },
+      "class": "com/mojang/blaze3d/vertex/VertexConsumer"
+    },
+    {
+      "id": "vertex_set_color",
+      "kind": "method",
+      "emit_name": "vertex_set_color_name",
+      "emit_sig": "vertex_set_color_sig",
+      "seed": {
+        "why": "colour, 0-255 per channel"
+      },
+      "owner": "com/mojang/blaze3d/vertex/VertexConsumer",
+      "name": "setColor",
+      "desc": "(IIII)Lcom/mojang/blaze3d/vertex/VertexConsumer;"
+    },
+    {
+      "id": "vertex_set_normal",
+      "kind": "method",
+      "emit_name": "vertex_set_normal_name",
+      "emit_sig": "vertex_set_normal_sig",
+      "seed": {
+        "why": "the line render type carries a normal and reads it as the segment direction, which is what gives a line its width. Only needed for the line half"
+      },
+      "owner": "com/mojang/blaze3d/vertex/VertexConsumer",
+      "name": "setNormal",
+      "desc": "(Lcom/mojang/blaze3d/vertex/PoseStack$Pose;FFF)Lcom/mojang/blaze3d/vertex/VertexConsumer;"
     },
     {
       "id": "channel_read0",
