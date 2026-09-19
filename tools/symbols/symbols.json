@@ -2622,6 +2622,40 @@
       "desc": "()F"
     },
     {
+      "id": "entity_render_state_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "entity_render_state_class_sig",
+      "seed": {
+        "why": "the per-frame snapshot an entity is drawn from. Already reachable: the model pitch hook on updateRenderState is handed one"
+      },
+      "class": "net/minecraft/client/renderer/entity/state/EntityRenderState"
+    },
+    {
+      "id": "entity_render_state_no_outline",
+      "kind": "field",
+      "emit_name": "entity_render_state_no_outline_name",
+      "emit_sig": "entity_render_state_no_outline_sig",
+      "seed": {
+        "why": "the sentinel outlineColor holds when nothing is outlined; what to put back"
+      },
+      "owner": "net/minecraft/client/renderer/entity/state/EntityRenderState",
+      "name": "NO_OUTLINE",
+      "desc": "I"
+    },
+    {
+      "id": "entity_render_state_outline_color",
+      "kind": "field",
+      "emit_name": "entity_render_state_outline_color_name",
+      "emit_sig": "entity_render_state_outline_color_sig",
+      "seed": {
+        "why": "makes the game draw this entity's real silhouette into its outline target, in the colour given. Purely a rendering field -- unlike the entity's own glowing flag, which is entity state and would be wrong to touch"
+      },
+      "owner": "net/minecraft/client/renderer/entity/state/EntityRenderState",
+      "name": "outlineColor",
+      "desc": "I"
+    },
+    {
       "id": "hopper_block_class",
       "kind": "class",
       "emit_name": null,
@@ -2630,6 +2664,61 @@
         "why": "storage ESP matches block states against this parent class: hoppers"
       },
       "class": "net/minecraft/world/level/block/HopperBlock"
+    },
+    {
+      "id": "level_renderer_blit_entity_outline",
+      "kind": "method",
+      "emit_name": "level_renderer_blit_entity_outline_name",
+      "emit_sig": "level_renderer_blit_entity_outline_sig",
+      "seed": {
+        "why": "the moment the outline target holds raw silhouettes and has not yet been smeared over the frame. Hooking it gives both the mask and the chance to suppress the vanilla blit, without going anywhere near renderLevel -- which is the method Sodium and Iris rewrite"
+      },
+      "owner": "net/minecraft/client/renderer/LevelRenderer",
+      "name": "blitEntityOutline",
+      "desc": "()V",
+      "versions": [
+        {
+          "until": "26.2",
+          "name": "doEntityOutline",
+          "why": "renamed in 26.3 when the outline pass moved into the feature dispatcher"
+        }
+      ]
+    },
+    {
+      "id": "level_renderer_entity_outline_target",
+      "kind": "field",
+      "emit_name": "level_renderer_entity_outline_target_name",
+      "emit_sig": "level_renderer_entity_outline_target_sig",
+      "seed": {
+        "why": "where those silhouettes land. A field, so reading it needs no hook"
+      },
+      "owner": "net/minecraft/client/renderer/LevelRenderer",
+      "name": "entityOutlineTarget",
+      "desc": "Lcom/mojang/blaze3d/pipeline/RenderTarget;"
+    },
+    {
+      "id": "level_renderer_renders_entity_outline",
+      "kind": "field",
+      "emit_name": "level_renderer_renders_entity_outline_name",
+      "emit_sig": "level_renderer_renders_entity_outline_sig",
+      "seed": {
+        "why": "26.3 only: set it and the outline pass runs for this frame. Earlier versions ask shouldShowEntityOutlines() instead"
+      },
+      "owner": "net/minecraft/client/renderer/LevelRenderer",
+      "name": "currentFrameRendersEntityOutline",
+      "desc": "Z"
+    },
+    {
+      "id": "level_renderer_should_show_outlines",
+      "kind": "method",
+      "emit_name": "level_renderer_should_show_outlines_name",
+      "emit_sig": "level_renderer_should_show_outlines_sig",
+      "seed": {
+        "why": "the pre-26.3 way to get the outline pass to run at all. Absent on 26.2, which has neither this nor the 26.3 field -- that gap is unsolved"
+      },
+      "owner": "net/minecraft/client/renderer/LevelRenderer",
+      "name": "shouldShowEntityOutlines",
+      "desc": "()Z"
     },
     {
       "id": "level_renderer_submit_entities",
@@ -2712,6 +2801,16 @@
         "why": "the transform handed to the callback beside the consumer"
       },
       "class": "com/mojang/blaze3d/vertex/PoseStack$Pose"
+    },
+    {
+      "id": "render_target_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "render_target_class_sig",
+      "seed": {
+        "why": "the framebuffer type the outline target and our own blur targets are"
+      },
+      "class": "com/mojang/blaze3d/pipeline/RenderTarget"
     },
     {
       "id": "render_type_debug_filled_box",

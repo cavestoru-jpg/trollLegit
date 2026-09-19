@@ -650,5 +650,88 @@
     "class": "net/minecraft/world/phys/AABB",
     "emit_sig": "aabb_class_sig",
     "why": "the entity bounding box the in-world ESP reads. It was the last hardcoded intermediary literal in world_render_hook, which is why the whole renderer refused to start on 26.x and on vanilla: class_238 does not exist there"
+  },
+  "entity_render_state_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/client/renderer/entity/state/EntityRenderState",
+    "emit_sig": "entity_render_state_class_sig",
+    "why": "the per-frame snapshot an entity is drawn from. Already reachable: the model pitch hook on updateRenderState is handed one"
+  },
+  "entity_render_state_outline_color": {
+    "new": true,
+    "kind": "field",
+    "owner": "net/minecraft/client/renderer/entity/state/EntityRenderState",
+    "name": "outlineColor",
+    "desc": "I",
+    "emit_name": "entity_render_state_outline_color_name",
+    "emit_sig": "entity_render_state_outline_color_sig",
+    "why": "makes the game draw this entity's real silhouette into its outline target, in the colour given. Purely a rendering field -- unlike the entity's own glowing flag, which is entity state and would be wrong to touch"
+  },
+  "entity_render_state_no_outline": {
+    "new": true,
+    "kind": "field",
+    "owner": "net/minecraft/client/renderer/entity/state/EntityRenderState",
+    "name": "NO_OUTLINE",
+    "desc": "I",
+    "emit_name": "entity_render_state_no_outline_name",
+    "emit_sig": "entity_render_state_no_outline_sig",
+    "why": "the sentinel outlineColor holds when nothing is outlined; what to put back"
+  },
+  "level_renderer_entity_outline_target": {
+    "new": true,
+    "kind": "field",
+    "owner": "net/minecraft/client/renderer/LevelRenderer",
+    "name": "entityOutlineTarget",
+    "desc": "Lcom/mojang/blaze3d/pipeline/RenderTarget;",
+    "emit_name": "level_renderer_entity_outline_target_name",
+    "emit_sig": "level_renderer_entity_outline_target_sig",
+    "why": "where those silhouettes land. A field, so reading it needs no hook"
+  },
+  "level_renderer_blit_entity_outline": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/client/renderer/LevelRenderer",
+    "name": "blitEntityOutline",
+    "desc": "()V",
+    "emit_name": "level_renderer_blit_entity_outline_name",
+    "emit_sig": "level_renderer_blit_entity_outline_sig",
+    "resolve_from": "26.3",
+    "why": "the moment the outline target holds raw silhouettes and has not yet been smeared over the frame. Hooking it gives both the mask and the chance to suppress the vanilla blit, without going anywhere near renderLevel -- which is the method Sodium and Iris rewrite",
+    "versions": [
+      {
+        "until": "26.2",
+        "name": "doEntityOutline",
+        "why": "renamed in 26.3 when the outline pass moved into the feature dispatcher"
+      }
+    ]
+  },
+  "level_renderer_renders_entity_outline": {
+    "new": true,
+    "kind": "field",
+    "owner": "net/minecraft/client/renderer/LevelRenderer",
+    "name": "currentFrameRendersEntityOutline",
+    "desc": "Z",
+    "emit_name": "level_renderer_renders_entity_outline_name",
+    "emit_sig": "level_renderer_renders_entity_outline_sig",
+    "resolve_from": "26.3",
+    "why": "26.3 only: set it and the outline pass runs for this frame. Earlier versions ask shouldShowEntityOutlines() instead"
+  },
+  "level_renderer_should_show_outlines": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/client/renderer/LevelRenderer",
+    "name": "shouldShowEntityOutlines",
+    "desc": "()Z",
+    "emit_name": "level_renderer_should_show_outlines_name",
+    "emit_sig": "level_renderer_should_show_outlines_sig",
+    "why": "the pre-26.3 way to get the outline pass to run at all. Absent on 26.2, which has neither this nor the 26.3 field -- that gap is unsolved"
+  },
+  "render_target_class": {
+    "new": true,
+    "kind": "class",
+    "class": "com/mojang/blaze3d/pipeline/RenderTarget",
+    "emit_sig": "render_target_class_sig",
+    "why": "the framebuffer type the outline target and our own blur targets are"
   }
 }
