@@ -2546,6 +2546,18 @@
       "class": "net/minecraft/world/level/block/BarrelBlock"
     },
     {
+      "id": "component_null_to_empty",
+      "kind": "method",
+      "emit_name": "component_null_to_empty_name",
+      "emit_sig": "component_null_to_empty_sig",
+      "seed": {
+        "why": "a Component from a plain string. literal() returns MutableComponent, which is a subtype and would need a cast for nothing"
+      },
+      "owner": "net/minecraft/network/chat/Component",
+      "name": "nullToEmpty",
+      "desc": "(Ljava/lang/String;)Lnet/minecraft/network/chat/Component;"
+    },
+    {
       "id": "crafter_block_class",
       "kind": "class",
       "emit_name": null,
@@ -2664,6 +2676,28 @@
         "why": "storage ESP matches block states against this parent class: hoppers"
       },
       "class": "net/minecraft/world/level/block/HopperBlock"
+    },
+    {
+      "id": "level_render_state_camera",
+      "kind": "field",
+      "emit_name": "level_render_state_camera_name",
+      "emit_sig": "level_render_state_camera_sig",
+      "seed": {
+        "why": "submitNameTag wants the frame's camera state, and the hook is already holding the object that owns it -- no lookup, no extra hook"
+      },
+      "owner": "net/minecraft/client/renderer/state/level/LevelRenderState",
+      "name": "cameraRenderState",
+      "desc": "Lnet/minecraft/client/renderer/state/level/CameraRenderState;"
+    },
+    {
+      "id": "level_render_state_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "level_render_state_class_sig",
+      "seed": {
+        "why": "handed to the submitEntities hook as its second argument"
+      },
+      "class": "net/minecraft/client/renderer/state/level/LevelRenderState"
     },
     {
       "id": "level_renderer_blit_entity_outline",
@@ -2793,6 +2827,28 @@
       "desc": "()F"
     },
     {
+      "id": "pose_stack_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "pose_stack_class_sig",
+      "seed": {
+        "why": "the transform the frame is building, handed to the submitEntities hook"
+      },
+      "class": "com/mojang/blaze3d/vertex/PoseStack"
+    },
+    {
+      "id": "pose_stack_pop",
+      "kind": "method",
+      "emit_name": "pose_stack_pop_name",
+      "emit_sig": "pose_stack_pop_sig",
+      "seed": {
+        "why": "and put it back, or everything drawn after moves too"
+      },
+      "owner": "com/mojang/blaze3d/vertex/PoseStack",
+      "name": "popPose",
+      "desc": "()V"
+    },
+    {
       "id": "pose_stack_pose_class",
       "kind": "class",
       "emit_name": null,
@@ -2801,6 +2857,30 @@
         "why": "the transform handed to the callback beside the consumer"
       },
       "class": "com/mojang/blaze3d/vertex/PoseStack$Pose"
+    },
+    {
+      "id": "pose_stack_push",
+      "kind": "method",
+      "emit_name": "pose_stack_push_name",
+      "emit_sig": "pose_stack_push_sig",
+      "seed": {
+        "why": "save the frame's transform before moving it"
+      },
+      "owner": "com/mojang/blaze3d/vertex/PoseStack",
+      "name": "pushPose",
+      "desc": "()V"
+    },
+    {
+      "id": "pose_stack_translate",
+      "kind": "method",
+      "emit_name": "pose_stack_translate_name",
+      "emit_sig": "pose_stack_translate_sig",
+      "seed": {
+        "why": "move to the tag's anchor. Doubles, because a world coordinate far from spawn does not survive a float"
+      },
+      "owner": "com/mojang/blaze3d/vertex/PoseStack",
+      "name": "translate",
+      "desc": "(DDD)V"
     },
     {
       "id": "render_target_class",
@@ -2964,6 +3044,18 @@
       ]
     },
     {
+      "id": "submit_name_tag",
+      "kind": "method",
+      "emit_name": "submit_name_tag_name",
+      "emit_sig": "submit_name_tag_sig",
+      "seed": {
+        "why": "the game's own name tag: its font, its background, its phase. Read off EntityRenderer.submitNameDisplay, which passes (pose, nameTagAttachment, 0, nameTag, !isDiscrete, lightCoords, camera) with the pose already translated to the entity. Earlier versions in this era carry an extra double and a different CameraRenderState package, and are left alone until the submit path reaches them"
+      },
+      "owner": "net/minecraft/client/renderer/OrderedSubmitNodeCollector",
+      "name": "submitNameTag",
+      "desc": "(Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/world/phys/Vec3;ILnet/minecraft/network/chat/Component;ZILnet/minecraft/client/renderer/state/level/CameraRenderState;)V"
+    },
+    {
       "id": "submit_node_collector_class",
       "kind": "class",
       "emit_name": null,
@@ -3050,6 +3142,18 @@
       "owner": "net/minecraft/world/phys/Vec2",
       "name": "y",
       "desc": "F"
+    },
+    {
+      "id": "vec3_zero",
+      "kind": "field",
+      "emit_name": "vec3_zero_name",
+      "emit_sig": "vec3_zero_sig",
+      "seed": {
+        "why": "the tag offset. The pose is translated to the anchor instead, so the offset is nothing and no Vec3 has to be constructed per tag per frame"
+      },
+      "owner": "net/minecraft/world/phys/Vec3",
+      "name": "ZERO",
+      "desc": "Lnet/minecraft/world/phys/Vec3;"
     },
     {
       "id": "vec3i_get_x",

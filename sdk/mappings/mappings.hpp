@@ -876,6 +876,27 @@ namespace sdk
 		extern const char* render_type_debug_quads_name;
 		extern const char* render_type_debug_quads_sig;
 
+		// Name tags drawn by the game: its font, its background, its phase, and
+		// whichever backend it is running on. Read off EntityRenderer.submitNameDisplay,
+		// which calls it as (pose, nameTagAttachment, 0, nameTag, !isDiscrete,
+		// lightCoords, camera) with the pose already translated to the entity.
+		extern const char* submit_name_tag_name;
+		extern const char* submit_name_tag_sig;
+		extern const char* level_render_state_class_sig;
+		extern const char* level_render_state_camera_name;
+		extern const char* level_render_state_camera_sig;
+		extern const char* vec3_zero_name;
+		extern const char* vec3_zero_sig;
+		extern const char* component_null_to_empty_name;
+		extern const char* component_null_to_empty_sig;
+		extern const char* pose_stack_class_sig;
+		extern const char* pose_stack_push_name;
+		extern const char* pose_stack_push_sig;
+		extern const char* pose_stack_pop_name;
+		extern const char* pose_stack_pop_sig;
+		extern const char* pose_stack_translate_name;
+		extern const char* pose_stack_translate_sig;
+
 		// The game's own vertex sink, and the transform handed to the callback
 		// beside it. addVertex takes the pose overload so the geometry lands in the
 		// same space as everything else submitted that frame; setNormal is only

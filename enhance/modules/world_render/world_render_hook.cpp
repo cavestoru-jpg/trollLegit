@@ -191,6 +191,18 @@ namespace
 	// the collector exists and the frame is taking entity geometry.
 	jobject   g_frame_pose = nullptr;
 	jobject   g_frame_collector = nullptr;
+	jobject   g_frame_state = nullptr;          // LevelRenderState, for the frame's camera
+
+	// Name tags, all optional: a missing id costs the tags, never the boxes.
+	jmethodID g_mid_submit_name_tag = nullptr;
+	jfieldID  g_fid_lrs_camera = nullptr;
+	jobject   g_vec3_zero = nullptr;            // GlobalRef
+	jclass    g_component_cls = nullptr;        // GlobalRef
+	jmethodID g_mid_component_of = nullptr;
+	jmethodID g_mid_pose_push = nullptr;
+	jmethodID g_mid_pose_pop = nullptr;
+	jmethodID g_mid_pose_translate = nullptr;
+	bool      g_tags_ready = false;
 
 	jmethodID g_renderer_render_text = nullptr;
 	jmethodID g_renderer_upload_font = nullptr;
@@ -932,6 +944,7 @@ namespace
 	}
 
 	void submit_boxes(JNIEnv* env, const float mvp[16]);
+	void submit_tags_native(JNIEnv* env, double cam_x, double cam_y, double cam_z);
 
 	// Collects the boxes and tags for this frame and hands them to the Java
 	// renderer.
@@ -1147,10 +1160,10 @@ namespace
 		if (!g_tris.empty() || !g_lines.empty())
 			submit_boxes(env, mvp);
 
-		// Tags are still the OpenGL text path. submitNameTag would draw them in the
-		// game's own font and its own phase, but its signature changes shape three
-		// times across this era, so it is a separate job from getting boxes drawn.
-		if (!g_frame_collector)
+		// The game's own tags where the submit path is running, ours otherwise.
+		if (g_frame_collector)
+			submit_tags_native(env, cam_x, cam_y, cam_z);
+		else
 			submit_text(env, mvp);
 
 		// One line, on the first frame that draws anything. The per-frame
@@ -1168,6 +1181,70 @@ namespace
 				            std::to_string(g_tags.size()));
 			}
 		}
+	}
+
+	// One name tag per target, drawn by the game.
+	//
+	// The pose is moved to the anchor and the offset argument left at zero,
+	// rather than building a Vec3 per tag per frame. It is pushed and popped
+	// around each one: everything submitted afterwards shares this transform.
+	void submit_tags_native(JNIEnv* env, double cam_x, double cam_y, double cam_z)
+	{
+		if (!g_tags_ready || !g_frame_collector || !g_frame_pose || !g_frame_state)
+			return;
+		if (g_tags.empty())
+			return;
+
+		jobject camera = env->GetObjectField(g_frame_state, g_fid_lrs_camera);
+		clear_exception(env);
+		if (!camera)
+			return;
+
+		jobject ordered = env->CallObjectMethod(g_frame_collector, g_mid_order, 0);
+		clear_exception(env);
+		if (!ordered)
+		{
+			env->DeleteLocalRef(camera);
+			return;
+		}
+
+		for (const auto& tag : g_tags)
+		{
+			// Health rides in the text. The OpenGL path drew it as a bar, which
+			// has no equivalent here -- the game's tag renderer draws a string.
+			std::string text = tag.name;
+			if (tag.max_health > 0.0f)
+				text += "  " + std::to_string(static_cast<int>(tag.health + 0.5f));
+
+			jstring js = env->NewStringUTF(text.c_str());
+			if (!js)
+				continue;
+
+			jobject comp = env->CallStaticObjectMethod(g_component_cls, g_mid_component_of, js);
+			clear_exception(env);
+			env->DeleteLocalRef(js);
+			if (!comp)
+				continue;
+
+			env->CallVoidMethod(g_frame_pose, g_mid_pose_push);
+			env->CallVoidMethod(g_frame_pose, g_mid_pose_translate,
+			                    tag.x - cam_x, tag.y - cam_y, tag.z - cam_z);
+
+			// Full-bright, and see-through on: a tag that is only legible when
+			// the target is already visible is not worth drawing.
+			env->CallVoidMethod(ordered, g_mid_submit_name_tag,
+			                    g_frame_pose, g_vec3_zero, (jint)0, comp,
+			                    JNI_TRUE, (jint)0x00F000F0, camera);
+			clear_exception(env);
+
+			env->CallVoidMethod(g_frame_pose, g_mid_pose_pop);
+			clear_exception(env);
+
+			env->DeleteLocalRef(comp);
+		}
+
+		env->DeleteLocalRef(ordered);
+		env->DeleteLocalRef(camera);
 	}
 
 	// Splits out of submit_frame so the tag path can run after it without
@@ -1410,9 +1487,11 @@ namespace
 		// outside it, and the PoseStack is the frame's, not ours to keep.
 		g_frame_pose = pose_stack;
 		g_frame_collector = collector;
+		g_frame_state = state;
 		try { submit_frame(env); } catch (...) {}
 		g_frame_pose = nullptr;
 		g_frame_collector = nullptr;
+		g_frame_state = nullptr;
 	}
 
 	// Proxy.newProxyInstance for a single-method interface, with a handler the
@@ -1663,6 +1742,88 @@ namespace
 		return global;
 	}
 
+	// The name tag path, which is allowed to fail on its own: without it the
+	// boxes still draw, and saying so beats taking the feature down with it.
+	void resolve_name_tags(JNIEnv* env, jclass ordered_cls)
+	{
+		g_tags_ready = false;
+
+		if (!sdk::mappings::have(sdk::mappings::submit_name_tag_name))
+		{
+			logger::log("[world_render] no submitNameTag on this version -- in-world tags "
+			            "stay off on the submit path");
+			return;
+		}
+
+		g_mid_submit_name_tag = env->GetMethodID(ordered_cls,
+			sdk::mappings::submit_name_tag_name, sdk::mappings::submit_name_tag_sig);
+		clear_exception(env);
+
+		jclass lrs_cls = sdk::classloader::find_class(env,
+			sdk::mappings::level_render_state_class_sig);
+		if (lrs_cls)
+		{
+			g_fid_lrs_camera = env->GetFieldID(lrs_cls,
+				sdk::mappings::level_render_state_camera_name,
+				sdk::mappings::level_render_state_camera_sig);
+			clear_exception(env);
+			env->DeleteLocalRef(lrs_cls);
+		}
+
+		jclass pose_cls = sdk::classloader::find_class(env, sdk::mappings::pose_stack_class_sig);
+		if (pose_cls)
+		{
+			g_mid_pose_push = env->GetMethodID(pose_cls,
+				sdk::mappings::pose_stack_push_name, sdk::mappings::pose_stack_push_sig);
+			g_mid_pose_pop = env->GetMethodID(pose_cls,
+				sdk::mappings::pose_stack_pop_name, sdk::mappings::pose_stack_pop_sig);
+			g_mid_pose_translate = env->GetMethodID(pose_cls,
+				sdk::mappings::pose_stack_translate_name,
+				sdk::mappings::pose_stack_translate_sig);
+			clear_exception(env);
+			env->DeleteLocalRef(pose_cls);
+		}
+
+		jclass vec3_cls = sdk::classloader::find_class(env, sdk::mappings::vec3d_class_sig);
+		if (vec3_cls)
+		{
+			jfieldID fid = env->GetStaticFieldID(vec3_cls,
+				sdk::mappings::vec3_zero_name, sdk::mappings::vec3_zero_sig);
+			clear_exception(env);
+			if (fid)
+			{
+				jobject local = env->GetStaticObjectField(vec3_cls, fid);
+				clear_exception(env);
+				if (local)
+				{
+					g_vec3_zero = env->NewGlobalRef(local);
+					env->DeleteLocalRef(local);
+				}
+			}
+			env->DeleteLocalRef(vec3_cls);
+		}
+
+		jclass comp_cls = sdk::classloader::find_class(env, sdk::mappings::text_class_sig);
+		if (comp_cls)
+		{
+			g_mid_component_of = env->GetStaticMethodID(comp_cls,
+				sdk::mappings::component_null_to_empty_name,
+				sdk::mappings::component_null_to_empty_sig);
+			clear_exception(env);
+			if (g_mid_component_of)
+				g_component_cls = (jclass)env->NewGlobalRef(comp_cls);
+			env->DeleteLocalRef(comp_cls);
+		}
+
+		g_tags_ready = g_mid_submit_name_tag && g_fid_lrs_camera && g_vec3_zero &&
+		               g_component_cls && g_mid_component_of && g_mid_pose_push &&
+		               g_mid_pose_pop && g_mid_pose_translate;
+
+		logger::log(g_tags_ready
+			? "[world_render] in-world name tags go through the game's own font and phase"
+			: "[world_render] the name tag path did not resolve fully -- boxes only");
+	}
+
 	// Everything the submit path needs, or false and a reason.
 	bool init_submit_path(JNIEnv* env)
 	{
@@ -1875,6 +2036,8 @@ namespace
 			                          g_tris_as_quads ? JNI_TRUE : JNI_FALSE);
 		}
 		clear_exception(env);
+
+		resolve_name_tags(env, ordered_cls);
 
 		g_proxy_tris = make_proxy(env, cgr_cls, 1);    // KIND_SUBMIT_TRIS
 		g_proxy_lines = make_proxy(env, cgr_cls, 2);   // KIND_SUBMIT_LINES
@@ -2543,7 +2706,8 @@ void enhance::modules::world_render_hook::shutdown()
 
 	if (env)
 	{
-		for (jobject* ref : { &g_rt_lines, &g_rt_tris, &g_proxy_tris, &g_proxy_lines })
+		for (jobject* ref : { &g_rt_lines, &g_rt_tris, &g_proxy_tris, &g_proxy_lines,
+		                      &g_vec3_zero })
 		{
 			if (*ref)
 			{
@@ -2551,7 +2715,7 @@ void enhance::modules::world_render_hook::shutdown()
 				*ref = nullptr;
 			}
 		}
-		for (jclass* ref : { &g_ordered_cls, &g_level_renderer_cls })
+		for (jclass* ref : { &g_ordered_cls, &g_level_renderer_cls, &g_component_cls })
 		{
 			if (*ref)
 			{
@@ -2563,6 +2727,8 @@ void enhance::modules::world_render_hook::shutdown()
 	g_mid_order = nullptr;
 	g_mid_submit_custom = nullptr;
 	g_mid_stage_geometry = nullptr;
+	g_tags_ready = false;
+	g_mid_submit_name_tag = nullptr;
 
 	// The subscription cannot be undone — Fabric's Event has no unregister —
 	// so the listener has to be told to stand down instead. Order matters:
