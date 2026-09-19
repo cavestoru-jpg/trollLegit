@@ -1802,9 +1802,17 @@ namespace
 			reinterpret_cast<void*>(hkSubmitEntities), &ORIG_submit_entities);
 		if (r != JNIHOOK_OK)
 		{
-			char line[224];
+			// result=6 is JNIHOOK_ERR_JVMTI_OPERATION, which is returned from
+			// several places and names nothing by itself. The JVMTI error behind
+			// it and the capability set Init settled for are both available --
+			// anything but "full" means another agent already holds something we
+			// wanted, and can_suspend in particular is solo per JVM and is not
+			// released promptly, so a re-injection routinely goes without it.
+			char line[320];
 			sprintf_s(line, sizeof(line),
-			          "[world_render] hook on submitEntities failed=%d %s", (int)r,
+			          "[world_render] hook on submitEntities failed=%d jvmti=%d caps=%s %s",
+			          (int)r, JNIHook_LastJvmtiError(),
+			          JNIHook_AcquiredCapabilities() ? JNIHook_AcquiredCapabilities() : "?",
 			          JNIHook_LastErrorDetail() ? JNIHook_LastErrorDetail() : "");
 			logger::log_error(line);
 			return false;
@@ -1820,16 +1828,24 @@ namespace
 
 	enum class submit_state { pending, ready, unavailable };
 
-	// Resolve once on this thread, then queue the attach and wait for it. Three
-	// outcomes, because the caller must tell "not yet" from "never": falling back
-	// to the Fabric event while the attach is still in flight would subscribe to
-	// both and draw everything twice.
+	// Resolve once, then keep trying to attach until it takes or until it is
+	// clearly never going to.
+	//
+	// Three outcomes, because the caller must tell "not yet" from "never":
+	// falling back to the Fabric event while an attach is still being retried
+	// would subscribe to both and draw everything twice.
+	//
+	// The retry is on a clock rather than per call. The same attach succeeded
+	// five seconds after one injection and failed eighty milliseconds after the
+	// next, which is the shape of a game that has not finished coming up --
+	// and the caller retries every worker iteration, so ungated attempts would
+	// all be spent inside the first fiftieth of a second.
 	submit_state ensure_submit_path(JNIEnv* env)
 	{
 		static bool      s_resolved = false;
 		static bool      s_refused = false;
-		static bool      s_posted = false;
-		static ULONGLONG s_deadline = 0;
+		static int       s_attempts = 0;
+		static ULONGLONG s_next_try = 0;
 
 		if (g_submit_ready)
 		{
@@ -1847,36 +1863,50 @@ namespace
 			if (!init_submit_path(env))
 			{
 				s_refused = true;
+				g_submit_pending = false;
 				return submit_state::unavailable;
 			}
 			s_resolved = true;
 		}
 
-		if (!s_posted)
+		const ULONGLONG now = GetTickCount64();
+		if (now < s_next_try)
 		{
-			s_posted = true;
-			s_deadline = GetTickCount64() + 5000;
-			enhance::client_thread::post([]() {
-				if (!attach_submit_entities())
-					g_submit_attach_failed = true;
-			});
+			g_submit_pending = true;
+			return submit_state::pending;
+		}
+		s_next_try = now + 2000;
+
+		// Posted rather than called: post runs inline today, but if a drain site
+		// ever exists where the client thread is executing Java rather than
+		// sitting in a native call, this attach should move there with the rest.
+		g_submit_attach_failed = false;
+		enhance::client_thread::post([]() {
+			if (!attach_submit_entities())
+				g_submit_attach_failed = true;
+		});
+
+		if (g_submit_ready)
+		{
+			g_submit_pending = false;
+			return submit_state::ready;
 		}
 
-		if (g_submit_attach_failed)
+		if (++s_attempts >= 10)
 		{
+			logger::log_error("[world_render] submitEntities refused the hook ten times over "
+			                  "twenty seconds -- giving up and falling back to the Fabric "
+			                  "event");
 			s_refused = true;
+			g_submit_pending = false;
 			return submit_state::unavailable;
 		}
 
-		// The queue only drains on the client thread, so a game that is not
-		// drawing never runs it. Give up rather than block the feature forever.
-		if (GetTickCount64() > s_deadline)
-		{
-			logger::log_error("[world_render] the queued submitEntities attach never ran -- "
-			                  "falling back to the Fabric event");
-			s_refused = true;
-			return submit_state::unavailable;
-		}
+		char line[160];
+		sprintf_s(line, sizeof(line),
+		          "[world_render] attach attempt %d did not take; trying again in 2s",
+		          s_attempts);
+		logger::log(line);
 
 		g_submit_pending = true;
 		return submit_state::pending;
