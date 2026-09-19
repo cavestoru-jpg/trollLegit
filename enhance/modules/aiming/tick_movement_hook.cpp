@@ -83,6 +83,12 @@ static std::atomic<float> g_applied_dyaw{0.0f};
 // come back fake. Aiming off a fake angle and then normalising the answer around
 // it feeds back into the next tick -- the view swings tens of degrees with a
 // single locked target standing still.
+// How many of our swaps are holding a fake angle right now, and which.
+// Read by the camera probe: if the view samples while this is non-zero, the
+// shaking is a swap leaking into the frame rather than an unstable aim.
+static std::atomic<int>         g_swap_depth{0};
+static std::atomic<const char*> g_swap_tag{""};
+
 static std::atomic<float>    g_true_yaw{0.0f};
 static std::atomic<float>    g_true_pitch{0.0f};
 static std::atomic<uint64_t> g_true_stamp{0};
@@ -292,11 +298,14 @@ struct scoped_yaw_swap
 			head = true;
 		}
 		active = true;
+		g_swap_tag.store("raycast/packet", std::memory_order_relaxed);
+		g_swap_depth.fetch_add(1, std::memory_order_acq_rel);
 	}
 
 	~scoped_yaw_swap()
 	{
 		if (!active) return;
+		g_swap_depth.fetch_sub(1, std::memory_order_acq_rel);
 
 		// Subtract what was added rather than writing the sampled value back.
 		// Two of the callers -- the teleport acknowledgement and the rotation
@@ -461,6 +470,57 @@ static void* trident_callback()
 	if (returns == 'V')
 		return (void*)hkTridentStoppedVoid;
 	return nullptr;
+}
+
+// Camera.alignWithEntity -- the exact moment the view samples the player's
+// rotation. A probe, not a feature: it calls straight through and only reports
+// what the camera is about to read, and whether one of our swaps is holding a
+// fake angle while it reads it.
+static jmethodID ORIG_camera_align = nullptr, g_mid_camera_align = nullptr;
+static jclass    g_camera_class = nullptr;
+static bool      g_camera_detached_ok = true;
+
+static void hkCameraAlign(JNIEnv* env, jobject thiz, jfloat partial)
+{
+	static ULONGLONG s_next = 0;
+	const ULONGLONG now = GetTickCount64();
+	if (globals::aiming_debug_log && now >= s_next && g_mid_get_yaw && g_mid_get_pitch)
+	{
+		s_next = now + 500;
+		jobject me = fetch_local_player(env);
+		if (me)
+		{
+			const float yaw = env->CallFloatMethod(me, g_mid_get_yaw);
+			if (env->ExceptionCheck()) env->ExceptionClear();
+			const float pitch = env->CallFloatMethod(me, g_mid_get_pitch);
+			if (env->ExceptionCheck()) env->ExceptionClear();
+
+			float last_yaw = 0.0f, last_pitch = 0.0f;
+			if (g_fid_last_yaw)   last_yaw = env->GetFloatField(me, g_fid_last_yaw);
+			if (g_fid_last_pitch) last_pitch = env->GetFloatField(me, g_fid_last_pitch);
+			if (env->ExceptionCheck()) env->ExceptionClear();
+
+			float true_yaw = 0.0f, true_pitch = 0.0f;
+			const bool have_true =
+				enhance::modules::aiming::tick_movement_hook::true_rotation(true_yaw, true_pitch);
+
+			char line[256];
+			sprintf_s(line, sizeof(line),
+				"[camera] yaw %.1f (prev %.1f) pitch %.1f (prev %.1f) | true %.1f/%.1f%s | swaps=%d %s",
+				yaw, last_yaw, pitch, last_pitch, true_yaw, true_pitch,
+				have_true ? "" : " (stale)",
+				g_swap_depth.load(std::memory_order_acquire),
+				g_swap_tag.load(std::memory_order_relaxed));
+			logger::log(line);
+			env->DeleteLocalRef(me);
+		}
+	}
+
+	if (ORIG_camera_align && g_camera_class && thiz)
+	{
+		env->CallNonvirtualVoidMethod(thiz, g_camera_class, ORIG_camera_align, partial);
+		if (env->ExceptionCheck()) env->ExceptionClear();
+	}
 }
 
 // ClientInput.tick -- where the game rebuilds this tick's movement input.
@@ -721,6 +781,8 @@ namespace
 			env->CallVoidMethod(entity, g_mid_set_pitch, want.pitch);
 			if (env->ExceptionCheck()) { env->ExceptionClear(); return; }
 			swapped = true;
+			g_swap_tag.store("model pitch", std::memory_order_relaxed);
+			g_swap_depth.fetch_add(1, std::memory_order_acq_rel);
 
 			// lastPitch has to move with it. The renderer does not read the field,
 			// it interpolates lastPitch -> pitch by the frame fraction, so setting
@@ -741,6 +803,8 @@ namespace
 
 		~scoped_model_pitch()
 		{
+			if (swapped)
+				g_swap_depth.fetch_sub(1, std::memory_order_acq_rel);
 			if (swapped)
 			{
 				env->CallVoidMethod(entity, g_mid_set_pitch, saved_pitch);
@@ -900,6 +964,8 @@ static void hkTick(JNIEnv* env, jobject thiz)
 
 			swapped = true;
 			g_applied_dyaw.store(dyaw, std::memory_order_release);
+			g_swap_tag.store("tick", std::memory_order_relaxed);
+			g_swap_depth.fetch_add(1, std::memory_order_acq_rel);
 			g_swapping.store(true, std::memory_order_release);
 		}
 	}
@@ -937,6 +1003,7 @@ static void hkTick(JNIEnv* env, jobject thiz)
 	{
 		g_swapping.store(false, std::memory_order_release);
 		g_applied_dyaw.store(0.0f, std::memory_order_release);
+		g_swap_depth.fetch_sub(1, std::memory_order_acq_rel);
 
 		// Put back what the CAMERA reads, and nothing else.
 		//
@@ -1363,6 +1430,9 @@ bool enhance::modules::aiming::tick_movement_hook::init()
 			// base class but holds the concrete one, and it overrides tick. A hook
 			// on the base attaches and then never fires -- which is exactly how
 			// Silent correction stayed indistinguishable from Strict.
+			{ sdk::mappings::camera_class_sig, sdk::mappings::camera_align_with_entity_name,
+			  sdk::mappings::camera_align_with_entity_sig, (void*)hkCameraAlign,
+			  &ORIG_camera_align, &g_mid_camera_align, &g_camera_class, "camera probe" },
 			{ sdk::mappings::keyboard_input_class_sig, sdk::mappings::keyboard_input_tick_name,
 			  sdk::mappings::keyboard_input_tick_sig, input_tick_callback(),
 			  &ORIG_input_tick, &g_mid_input_tick, &g_input_class, "movement input" },
