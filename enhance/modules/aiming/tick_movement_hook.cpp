@@ -604,7 +604,7 @@ static void hkInputTickSlowdown(JNIEnv* env, jobject thiz, jboolean slow, jfloat
 // The arity is the whole difference, and it is in the descriptor.
 static void* input_tick_callback()
 {
-	const char* sig = sdk::mappings::input_tick_sig;
+	const char* sig = sdk::mappings::keyboard_input_tick_sig;
 	if (!sdk::mappings::have(sig))
 		return nullptr;
 	if (strcmp(sig, "()V") == 0)
@@ -1324,8 +1324,12 @@ bool enhance::modules::aiming::tick_movement_hook::init()
 			  sdk::mappings::living_renderer_render_sig, (void*)hkLivingRendererRender,
 			  &ORIG_living_render, &g_mid_living_render, &g_living_render_class,
 			  "model pitch (pre-1.21.2)" },
-			{ sdk::mappings::input_class_sig, sdk::mappings::input_tick_name,
-			  sdk::mappings::input_tick_sig, input_tick_callback(),
+			// KeyboardInput, not ClientInput: LocalPlayer.input is declared as the
+			// base class but holds the concrete one, and it overrides tick. A hook
+			// on the base attaches and then never fires -- which is exactly how
+			// Silent correction stayed indistinguishable from Strict.
+			{ sdk::mappings::keyboard_input_class_sig, sdk::mappings::keyboard_input_tick_name,
+			  sdk::mappings::keyboard_input_tick_sig, input_tick_callback(),
 			  &ORIG_input_tick, &g_mid_input_tick, &g_input_class, "movement input" },
 		};
 

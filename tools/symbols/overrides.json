@@ -30,9 +30,16 @@
     "kind": "method",
     "owner": "net/minecraft/client/player/KeyboardInput",
     "name": "tick",
-    "desc": "(ZF)V",
-    "resolve_from": "1.21.1",
-    "why": "header carries an empty sentinel; the symbol is real on older versions"
+    "desc": "()V",
+    "resolve_from": "1.21.5",
+    "why": "the override the game actually runs. LocalPlayer.input is declared ClientInput but holds a KeyboardInput, and KeyboardInput overrides tick on every version -- so a hook on ClientInput.tick attaches happily and never fires",
+    "versions": [
+      {
+        "until": "1.21.3",
+        "desc": "(ZF)V",
+        "why": "the slowdown arguments were dropped in 1.21.4"
+      }
+    ]
   },
   "input_forward": {
     "kind": "field",

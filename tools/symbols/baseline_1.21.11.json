@@ -16,10 +16,15 @@
    "header": "Z",
    "why": "the header carried a descriptor beside an empty name for a symbol 1.21.11 does not have. The spec now describes the symbol properly and reports it absent on this version, so both slots are empty. Consumers gate on the name, which was already empty, so behaviour on 1.21.11 is unchanged."
   },
+  "keyboard_input_tick_name": {
+   "generated": "a",
+   "header": "",
+   "why": "the header parked this on an empty sentinel because it could not be resolved by hand. It resolves now: KeyboardInput.tick, which Fabric does not map, so the intermediary column falls back to the obfuscated name. Hooking it is what makes Silent movement correction do anything -- the base class's tick never runs."
+  },
   "keyboard_input_tick_sig": {
-   "generated": "",
+   "generated": "()V",
    "header": "(ZF)V",
-   "why": "the header carried a descriptor beside an empty name for a symbol 1.21.11 does not have. The spec now describes the symbol properly and reports it absent on this version, so both slots are empty. Consumers gate on the name, which was already empty, so behaviour on 1.21.11 is unchanged."
+   "why": "the header parked this on an empty sentinel because it could not be resolved by hand. It resolves now: KeyboardInput.tick, which Fabric does not map, so the intermediary column falls back to the obfuscated name. Hooking it is what makes Silent movement correction do anything -- the base class's tick never runs. 1.21.4 dropped the slowdown arguments."
   }
  },
  "namespace": "intermediary",

@@ -168,6 +168,26 @@ namespace
 
 	// A gate that stopped the module, for the menu. Returning early with no
 	// explanation is what made the old module impossible to diagnose.
+// A line a second while the module is live: candidate count, chosen distance
+// and angle. The rotation log shows the target angle swinging a hundred degrees
+// between ticks with the player standing still, and that is either one target
+// being aimed at badly or a different target every tick. These numbers say which.
+static void note_target(const enhance::modules::killaura::debug_info& d)
+{
+	static ULONGLONG s_next = 0;
+	const ULONGLONG now = GetTickCount64();
+	if (now < s_next)
+		return;
+	s_next = now + 1000;
+
+	char line[192];
+	sprintf_s(line, sizeof(line),
+		"[ka] target=%s locked=%d candidates=%d distance=%.2f yaw=%.1f pitch=%.1f",
+		d.has_target ? "yes" : "no", d.locked ? 1 : 0, d.candidates, d.distance,
+		d.yaw, d.pitch);
+	logger::log(line);
+}
+
 	void blocked(const char* why)
 	{
 		g_dbg = {};
@@ -389,6 +409,12 @@ void enhance::modules::killaura::run()
 
 		g_dbg.yaw = yaw;
 		g_dbg.pitch = pitch;
+
+		// Same gate as the other aiming lines. Consecutive entries answer the
+		// question the swap log raises: one target aimed at badly, or a
+		// different target every tick.
+		if (globals::aiming_debug_log)
+			note_target(g_dbg);
 
 		// Published into the same channel silent aim uses. Two producers
 		// running their own selectors and fighting over the rotation is exactly
