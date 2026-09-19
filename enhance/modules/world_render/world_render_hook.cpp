@@ -1381,6 +1381,9 @@ namespace
 	jmethodID g_submit_mid = nullptr;
 	bool      g_submit_attach_failed = false;
 	bool      g_submit_pending = false;
+	// Set when the filled half is drawn through a QUADS topology, where each
+	// triangle goes out as four vertices with the last one repeated.
+	bool      g_tris_as_quads = false;
 	jclass    g_level_renderer_cls = nullptr;    // GlobalRef
 
 	// LevelRenderer.submitEntities. The frame is taking entity geometry and is
@@ -1461,6 +1464,52 @@ namespace
 			env->DeleteLocalRef(loader);
 		env->DeleteLocalRef(handler);
 		return global;
+	}
+
+	// Which primitive a render type draws, as the enum constant's own name.
+	// Empty when this version does not expose it.
+	std::string read_topology(JNIEnv* env, jobject render_type)
+	{
+		if (!render_type || !sdk::mappings::have(sdk::mappings::render_type_topology_name))
+			return std::string();
+
+		jclass rt_cls = env->GetObjectClass(render_type);
+		jmethodID mid = rt_cls
+			? env->GetMethodID(rt_cls, sdk::mappings::render_type_topology_name,
+			                   sdk::mappings::render_type_topology_sig)
+			: nullptr;
+		clear_exception(env);
+		if (rt_cls)
+			env->DeleteLocalRef(rt_cls);
+		if (!mid)
+			return std::string();
+
+		jobject topo = env->CallObjectMethod(render_type, mid);
+		clear_exception(env);
+		if (!topo)
+			return std::string();
+
+		// It is an enum, so name() is java.lang.Enum's and needs no mapping.
+		jclass topo_cls = env->GetObjectClass(topo);
+		jmethodID mid_name = topo_cls
+			? env->GetMethodID(topo_cls, "name", "()Ljava/lang/String;")
+			: nullptr;
+		clear_exception(env);
+		if (topo_cls)
+			env->DeleteLocalRef(topo_cls);
+
+		jstring js = mid_name ? (jstring)env->CallObjectMethod(topo, mid_name) : nullptr;
+		clear_exception(env);
+		env->DeleteLocalRef(topo);
+		if (!js)
+			return std::string();
+
+		const char* raw = env->GetStringUTFChars(js, nullptr);
+		std::string out = raw ? raw : "";
+		if (raw)
+			env->ReleaseStringUTFChars(js, raw);
+		env->DeleteLocalRef(js);
+		return out;
 	}
 
 	// Element bits, mirrored in EnhanceRenderer.
@@ -1661,15 +1710,68 @@ namespace
 			return false;
 		}
 
+		// --- the line half ---------------------------------------------------
 		g_rt_lines = resolve_render_type(env, types_cls,
 			sdk::mappings::render_type_lines_name, sdk::mappings::render_type_lines_sig);
-		g_rt_tris = resolve_render_type(env, types_cls,
+		if (g_rt_lines)
+		{
+			const std::string topo = read_topology(env, g_rt_lines);
+			logger::log("[world_render] box edges topology: " + (topo.empty() ? "unknown" : topo));
+			if (!topo.empty() && topo.find("LINE") == std::string::npos)
+			{
+				logger::log_error("[world_render] the line render type does not draw lines -- "
+				                  "that half is off");
+				env->DeleteGlobalRef(g_rt_lines);
+				g_rt_lines = nullptr;
+			}
+		}
+
+		// --- the filled half -------------------------------------------------
+		//
+		// The geometry is a triangle LIST, so the render type has to be one that
+		// reads it as one. DEBUG_FILLED_BOX is a strip: every vertex continues
+		// the previous two, which turns box faces into uneven halves with sides
+		// missing a triangle. DEBUG_QUADS reads four vertices at a time, and a
+		// triangle becomes an exact quad by repeating its last vertex.
+		jobject rt_quads = resolve_render_type(env, types_cls,
+			sdk::mappings::render_type_debug_quads_name,
+			sdk::mappings::render_type_debug_quads_sig);
+		jobject rt_box = resolve_render_type(env, types_cls,
 			sdk::mappings::render_type_debug_filled_box_name,
 			sdk::mappings::render_type_debug_filled_box_sig);
+
+		const std::string topo_quads = read_topology(env, rt_quads);
+		const std::string topo_box = read_topology(env, rt_box);
+		logger::log("[world_render] filled candidates: debugQuads=" +
+		            (topo_quads.empty() ? "n/a" : topo_quads) + " debugFilledBox=" +
+		            (topo_box.empty() ? "n/a" : topo_box));
+
+		g_tris_as_quads = false;
+		if (rt_quads && topo_quads == "QUADS")
+		{
+			g_rt_tris = rt_quads;
+			rt_quads = nullptr;
+			g_tris_as_quads = true;
+		}
+		else if (rt_box && topo_box == "TRIANGLES")
+		{
+			g_rt_tris = rt_box;
+			rt_box = nullptr;
+		}
+		else
+		{
+			logger::log_error("[world_render] no render type on this version reads a triangle "
+			                  "list -- the filled half is off, edges are unaffected");
+			g_rt_tris = nullptr;
+		}
+
+		if (rt_quads) env->DeleteGlobalRef(rt_quads);
+		if (rt_box)   env->DeleteGlobalRef(rt_box);
+
 		if (!g_rt_lines && !g_rt_tris)
 		{
-			logger::log_error("[world_render] neither render type resolved -- there would be "
-			                  "nothing to draw the geometry as");
+			logger::log_error("[world_render] neither half can be drawn -- there would be "
+			                  "nothing to submit");
 			return false;
 		}
 
@@ -1764,6 +1866,14 @@ namespace
 		}
 
 		env->CallStaticVoidMethod(g_renderer_class, set_masks, mask_tris, mask_lines);
+		clear_exception(env);
+
+		if (jmethodID set_quads = env->GetStaticMethodID(g_renderer_class,
+		        "setTrisAsQuads", "(Z)V"))
+		{
+			env->CallStaticVoidMethod(g_renderer_class, set_quads,
+			                          g_tris_as_quads ? JNI_TRUE : JNI_FALSE);
+		}
 		clear_exception(env);
 
 		g_proxy_tris = make_proxy(env, cgr_cls, 1);    // KIND_SUBMIT_TRIS

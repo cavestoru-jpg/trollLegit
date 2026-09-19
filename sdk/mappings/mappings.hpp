@@ -866,6 +866,16 @@ namespace sdk
 		extern const char* render_type_debug_filled_box_name;
 		extern const char* render_type_debug_filled_box_sig;
 
+		// Which primitive a render type draws. The geometry is a triangle LIST, and
+		// DEBUG_FILLED_BOX is a triangle STRIP -- feeding one to the other turns box
+		// faces into uneven halves with sides missing a triangle. DEBUG_QUADS reads
+		// four vertices at a time and a triangle becomes an exact quad by repeating
+		// its last vertex. The value is an enum, so name() comes from the JDK.
+		extern const char* render_type_topology_name;
+		extern const char* render_type_topology_sig;
+		extern const char* render_type_debug_quads_name;
+		extern const char* render_type_debug_quads_sig;
+
 		// The game's own vertex sink, and the transform handed to the callback
 		// beside it. addVertex takes the pose overload so the geometry lands in the
 		// same space as everything else submitted that frame; setNormal is only

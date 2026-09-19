@@ -835,5 +835,42 @@
     "emit_name": "vertex_set_uv2_name",
     "emit_sig": "vertex_set_uv2_sig",
     "why": "the lightmap coordinate"
+  },
+  "render_type_topology": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/client/renderer/rendertype/RenderType",
+    "name": "primitiveTopology",
+    "desc": "()Lcom/mojang/renderpearl/api/pipeline/PrimitiveTopology;",
+    "emit_name": "render_type_topology_name",
+    "emit_sig": "render_type_topology_sig",
+    "resolve_from": "26.3",
+    "why": "which primitive a render type draws: TRIANGLES, TRIANGLE_STRIP, QUADS, LINES. DEBUG_FILLED_BOX is a strip, and feeding a triangle list to a strip is exactly the uneven half-filled box faces that showed up on screen. The value is an enum, so its name() comes from the JDK and needs no mapping",
+    "versions": [
+      {
+        "until": "26.2",
+        "desc": "()Lcom/mojang/blaze3d/PrimitiveTopology;",
+        "why": "the enum moved into renderpearl in 26.3"
+      }
+    ]
+  },
+  "render_type_debug_quads": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/client/renderer/rendertype/RenderTypes",
+    "name": "debugQuads",
+    "desc": "()Lnet/minecraft/client/renderer/rendertype/RenderType;",
+    "emit_name": "render_type_debug_quads_name",
+    "emit_sig": "render_type_debug_quads_sig",
+    "resolve_from": "1.21.11",
+    "why": "a quad topology for the filled half. A triangle expands to a quad by repeating its last vertex, which is exact -- unlike trying to feed a strip",
+    "versions": [
+      {
+        "until": "1.21.10",
+        "owner": "net/minecraft/client/renderer/RenderType",
+        "desc": "()Lnet/minecraft/client/renderer/RenderType;",
+        "why": "statics lived on RenderType before the 1.21.11 split"
+      }
+    ]
   }
 }

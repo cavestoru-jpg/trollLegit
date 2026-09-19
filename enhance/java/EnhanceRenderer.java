@@ -92,6 +92,13 @@ public final class EnhanceRenderer implements InvocationHandler {
     public static final int ELEM_LINE_WIDTH = 32;
 
     private static int trisElements;
+
+    /**
+     * Whether the filled half goes out through a QUADS topology. The geometry
+     * is a triangle list either way; a quad topology reads four vertices at a
+     * time, and repeating a triangle's last vertex makes an exact quad.
+     */
+    private static boolean trisAsQuads;
     private static int linesElements;
 
     /** Full-bright, so the boxes do not take the world's lighting. */
@@ -251,6 +258,11 @@ public final class EnhanceRenderer implements InvocationHandler {
         }
     }
 
+    /** See {@link #trisAsQuads}. */
+    public static void setTrisAsQuads(boolean value) {
+        trisAsQuads = value;
+    }
+
     /** Which elements each half's render type declares. */
     public static void setElementMasks(int tris, int lines) {
         trisElements = tris;
@@ -306,14 +318,18 @@ public final class EnhanceRenderer implements InvocationHandler {
      * is running draws this, because the consumer is the game's own.
      */
     private static void emit(Object pose, Object consumer, int first, int count,
-                             boolean lines, int elements) {
+                             boolean lines, int elements, boolean quads) {
         final ByteBuffer buf = submitBuffer;
         if (buf == null || mAddVertex == null || count <= 0) {
             return;
         }
 
         try {
-            for (int v = 0; v < count; v++) {
+            // With a quad topology the walk is per triangle, emitting its third
+            // vertex twice so four vertices arrive for three.
+            final boolean pad = quads && !lines;
+            for (int i = 0; i < count; i++) {
+                final int v = pad ? (i / 4) * 3 + Math.min(i % 4, 2) : i;
                 final int base = (first + v) * STRIDE;
 
                 final float x = buf.getFloat(base);
@@ -419,11 +435,14 @@ public final class EnhanceRenderer implements InvocationHandler {
         if (kind != KIND_WORLD_EVENT) {
             if (args != null && args.length >= 2) {
                 final boolean lines = kind == KIND_SUBMIT_LINES;
+                final int staged = lines ? submitLineVertices : submitTriVertices;
+                final int emitted = (!lines && trisAsQuads) ? (staged / 3) * 4 : staged;
                 emit(args[0], args[1],
                      lines ? submitTriVertices : 0,
-                     lines ? submitLineVertices : submitTriVertices,
+                     emitted,
                      lines,
-                     lines ? linesElements : trisElements);
+                     lines ? linesElements : trisElements,
+                     trisAsQuads);
             }
             return null;
         }
