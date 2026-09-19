@@ -335,52 +335,85 @@ public final class EnhanceRenderer implements InvocationHandler {
         return new EnhanceRenderer(kind);
     }
 
-    /** The text stream, which carries a texture coordinate the boxes do not. */
-    private static void emitText(Object pose, Object consumer, int count, int elements,
-                                 boolean quads) {
+    /**
+     * The text stream, which carries a texture coordinate the boxes do not --
+     * and is emitted with both windings.
+     *
+     * The OpenGL path drew it with culling switched off, so the winding of a
+     * billboarded glyph quad was never defined by anything. Through the game's
+     * render type it is: one way round the quads draw, the other they are
+     * culled and nothing appears at all, which is exactly what happened. A box
+     * survives that because its twelve triangles face every direction and half
+     * of them are always right; a flat quad facing the camera does not.
+     *
+     * Emitting each triangle both ways is what the geometry always meant. It
+     * doubles a few thousand vertices a frame, which is nothing, and it cannot
+     * be wrong the way picking a winding by guesswork can.
+     */
+    private static void emitText(Object pose, Object consumer, int stagedVertices,
+                                 int elements, boolean quads) {
         final ByteBuffer buf = submitTextBuffer;
-        if (buf == null || mAddVertex == null || count <= 0) {
+        if (buf == null || mAddVertex == null || stagedVertices < 3) {
             return;
         }
 
         try {
-            for (int i = 0; i < count; i++) {
-                final int v = quads ? (i / 4) * 3 + Math.min(i % 4, 2) : i;
-                final int base = v * TEXT_STRIDE;
+            final int triangles = stagedVertices / 3;
+            for (int t = 0; t < triangles; t++) {
+                final int a = t * 3, b = a + 1, c = a + 2;
 
-                mAddVertex.invoke(consumer, pose,
-                                  Float.valueOf(buf.getFloat(base)),
-                                  Float.valueOf(buf.getFloat(base + 4)),
-                                  Float.valueOf(buf.getFloat(base + 8)));
+                emitTextVertex(pose, consumer, a, elements);
+                emitTextVertex(pose, consumer, b, elements);
+                emitTextVertex(pose, consumer, c, elements);
+                if (quads) {
+                    emitTextVertex(pose, consumer, c, elements);
+                }
 
-                if ((elements & ELEM_COLOR) != 0) {
-                    mSetColor.invoke(consumer,
-                                     Integer.valueOf(channel(buf.getFloat(base + 20))),
-                                     Integer.valueOf(channel(buf.getFloat(base + 24))),
-                                     Integer.valueOf(channel(buf.getFloat(base + 28))),
-                                     Integer.valueOf(channel(buf.getFloat(base + 32))));
-                }
-                if ((elements & ELEM_UV0) != 0) {
-                    mSetUv.invoke(consumer, Float.valueOf(buf.getFloat(base + 12)),
-                                  Float.valueOf(buf.getFloat(base + 16)));
-                }
-                if ((elements & ELEM_UV1) != 0) {
-                    mSetUv1.invoke(consumer, Integer.valueOf(0), Integer.valueOf(10));
-                }
-                if ((elements & ELEM_UV2) != 0) {
-                    mSetUv2.invoke(consumer, Integer.valueOf(FULL_BRIGHT),
-                                   Integer.valueOf(FULL_BRIGHT));
-                }
-                if ((elements & ELEM_NORMAL) != 0) {
-                    mSetNormal.invoke(consumer, pose, Float.valueOf(0.0f),
-                                      Float.valueOf(1.0f), Float.valueOf(0.0f));
-                }
-                if ((elements & ELEM_LINE_WIDTH) != 0) {
-                    mSetLineWidth.invoke(consumer, Float.valueOf(LINE_WIDTH));
+                emitTextVertex(pose, consumer, c, elements);
+                emitTextVertex(pose, consumer, b, elements);
+                emitTextVertex(pose, consumer, a, elements);
+                if (quads) {
+                    emitTextVertex(pose, consumer, a, elements);
                 }
             }
         } catch (Throwable t) {
             mAddVertex = null;
+        }
+    }
+
+    private static void emitTextVertex(Object pose, Object consumer, int v, int elements)
+            throws Exception {
+        final ByteBuffer buf = submitTextBuffer;
+        final int base = v * TEXT_STRIDE;
+
+        mAddVertex.invoke(consumer, pose,
+                          Float.valueOf(buf.getFloat(base)),
+                          Float.valueOf(buf.getFloat(base + 4)),
+                          Float.valueOf(buf.getFloat(base + 8)));
+
+        if ((elements & ELEM_COLOR) != 0) {
+            mSetColor.invoke(consumer,
+                             Integer.valueOf(channel(buf.getFloat(base + 20))),
+                             Integer.valueOf(channel(buf.getFloat(base + 24))),
+                             Integer.valueOf(channel(buf.getFloat(base + 28))),
+                             Integer.valueOf(channel(buf.getFloat(base + 32))));
+        }
+        if ((elements & ELEM_UV0) != 0) {
+            mSetUv.invoke(consumer, Float.valueOf(buf.getFloat(base + 12)),
+                          Float.valueOf(buf.getFloat(base + 16)));
+        }
+        if ((elements & ELEM_UV1) != 0) {
+            mSetUv1.invoke(consumer, Integer.valueOf(0), Integer.valueOf(10));
+        }
+        if ((elements & ELEM_UV2) != 0) {
+            mSetUv2.invoke(consumer, Integer.valueOf(FULL_BRIGHT), Integer.valueOf(FULL_BRIGHT));
+        }
+        if ((elements & ELEM_NORMAL) != 0) {
+            mSetNormal.invoke(consumer, pose, Float.valueOf(0.0f), Float.valueOf(1.0f),
+                              Float.valueOf(0.0f));
+        }
+        if ((elements & ELEM_LINE_WIDTH) != 0) {
+            mSetLineWidth.invoke(consumer, Float.valueOf(LINE_WIDTH));
         }
     }
 
@@ -517,10 +550,7 @@ public final class EnhanceRenderer implements InvocationHandler {
         // Fabric listener's lifecycle, so they are dispatched ahead of its guards.
         if (kind != KIND_WORLD_EVENT) {
             if (args != null && args.length >= 2 && kind == KIND_SUBMIT_TEXT) {
-                final int staged = submitTextVertices;
-                emitText(args[0], args[1],
-                         textAsQuads ? (staged / 3) * 4 : staged,
-                         textElements, textAsQuads);
+                emitText(args[0], args[1], submitTextVertices, textElements, textAsQuads);
                 return null;
             }
 
