@@ -254,9 +254,30 @@ only one handled pitch, which is exactly how a consumer quietly keeps using the 
 - **Restore by subtracting the delta, never by writing the saved value back.** Mouse input
   and server teleports both legitimately write the rotation *inside* the wrap; overwriting
   discards them. That produced "I can't turn" and a stream of correction packets.
-- **The renderer interpolates `lastYaw → yaw` and `lastPitch → pitch`.** Setting only one end
-  makes the value sweep between real and silent every frame — it reads as shaking at the
-  frame rate, and for most of each tick it still shows the real angle.
+- **The renderer interpolates `lastYaw → yaw` and `lastPitch → pitch`, but the tick wrap
+  never touches the `last*` end — so do not correct it.** `yRotO`/`xRotO` are stamped from
+  the live rotation by `Entity.setOldRot`, reached through `setOldPosAndRot` from
+  `Entity.commonTick`, and `ClientLevel.tickNonPassenger` calls `commonTick` **before**
+  `tick()`:
+
+  ```
+  ClientLevel.tickNonPassenger(entity):
+      entity.commonTick()   -- yRotO = yRot, still the real angle
+      entity.tick()         -- the tick hook, where the fake goes in
+  ```
+
+  The fake therefore never reaches the pair. Taking the offset back out of it — which the
+  restore did for a long time — corrupts it by exactly that offset every tick, the camera
+  interpolates `lerp(partial, yRotO, yRot)` across the gap, and the view swings up to half a
+  turn between the silent angle and the real one. That was the violent shaking.
+
+  What `LivingEntity.tick` does to `yRotO` is **not** a copy, it is the ±180 wrap fixup
+  (`while (getYRot() - yRotO < -180) yRotO -= 360`). That is what kept the corrupted value
+  sitting just under half a turn from the live one instead of running away, and it is easy to
+  mistake for the copy if you only grep for a `putfield`.
+
+  The first-person hand is the opposite case and does need its correction: `yBob`/`xBob` are
+  written by `LocalPlayer.applyInput`, reached from `LivingEntity.aiStep` **inside** `tick()`.
 - **Yaw and pitch are not symmetric.** `headYaw` turns the model without touching the camera;
   pitch has no equivalent, both read `getPitch(tickDelta)`. The separation is *when* each
   reads, which is why the model pitch needs its own render-state hook.
