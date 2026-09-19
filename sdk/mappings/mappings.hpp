@@ -890,6 +890,12 @@ namespace sdk
 		// Hand enum + Hand.MAIN_HAND reuse the existing hand_class_sig /
 		// hand_main_hand_name / hand_main_hand_sig defined above.
 
+		// LivingEntityRenderer.render, the pre-1.21.2 home of the model's pitch.
+		// Absent from 1.21.2 on, where updateRenderState carries it instead --
+		// deliberately, so the two hooks can never both be installed.
+		extern const char* living_renderer_render_name;
+		extern const char* living_renderer_render_sig;
+
 		// Vec2, the movement vector ClientInput has held since 1.21.5. Writing
 		// input means building one of these; before 1.21.5 the same two numbers
 		// are mutable float fields and this is absent.

@@ -24,8 +24,12 @@ namespace sdk
 			// identifiers: this asks the table "does this version have it", which is
 			// the same question the binder answered at startup.
 			const requirement k_requirements[] = {
+				// Either renderer hook will do: the render state from 1.21.2 on,
+				// LivingEntityRenderer.render before it.
 				{ feature::model_pitch,   { "update_render_state", nullptr },
 				  "the render-state hook that carries the model's pitch (1.21.2+)" },
+				{ feature::model_pitch,   { "living_renderer_render", nullptr },
+				  "LivingEntityRenderer.render in a shape this client can hook" },
 				// Not a deficiency: the server did not send a rotation-only
 				// teleport before 1.21.2, so there is no echo to intercept. The
 				// position-look hook already covers what those versions do send.
@@ -35,8 +39,14 @@ namespace sdk
 				  "TridentItem.onStoppedUsing in a shape this client can hook" },
 				{ feature::reach,         { "get_entity_interaction_range", nullptr },
 				  "the entity interaction range attribute (1.20.5+)" },
+				// Either way of writing the slot will do. sdk/minecraft/player
+				// already falls back to the field when the setter is absent, so
+				// reporting this unavailable before 1.21.2 was simply wrong: it
+				// greyed out a feature that works on every supported version.
 				{ feature::slot_switch,   { "inventory_set_selected_slot", nullptr },
 				  "Inventory.setSelectedSlot (1.21.2+)" },
+				{ feature::slot_switch,   { "inventory_selected_slot", nullptr },
+				  "the selected-slot field" },
 				{ feature::storage_esp,   { "client_world_block_entities", nullptr },
 				  "the world's rendered block-entity set (1.21.9+)" },
 				{ feature::team_colours,  { "dyed_color_get_color", "dyed_color_component_class", nullptr },

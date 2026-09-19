@@ -305,5 +305,22 @@
     "emit_name": "vec2_y_name",
     "emit_sig": "vec2_y_sig",
     "why": "forward impulse in ClientInput.moveVector"
+  },
+  "living_renderer_render": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/client/renderer/entity/LivingEntityRenderer",
+    "name": "render",
+    "desc": "(Lnet/minecraft/world/entity/LivingEntity;FFLcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/MultiBufferSource;I)V",
+    "emit_name": "living_renderer_render_name",
+    "emit_sig": "living_renderer_render_sig",
+    "versions": [
+      {
+        "since": "1.21.2",
+        "blocked_by": "1.21.2 moved the model's pitch into a render state, which update_render_state hooks. Binding this as well would apply the pitch swap twice on any version that kept both.",
+        "why": "superseded by updateRenderState"
+      }
+    ],
+    "why": "where the model's pitch is sampled before 1.21.2: LivingEntityRenderer.render itself"
   }
 }

@@ -548,65 +548,93 @@ static jmethodID g_hooked_mid_rs          = nullptr;
 static jclass    g_rs_class               = nullptr;
 static bool      g_rs_detached_ok         = true;
 
-static void hkUpdateRenderState(JNIEnv* env, jobject thiz, jobject entity, jobject state, jfloat tick_delta)
+// Holds the silent pitch on the model for the duration of one render call.
+//
+// Pitch only. yaw and headYaw are already carrying the silent angle by the time
+// rendering happens, and swapping them again here would apply the offset twice.
+//
+// Two hooks need this, because the versions disagree about where the model's
+// pitch is sampled: 1.21.2 and later bake it into a render state, and everything
+// older reads it inside LivingEntityRenderer.render itself.
+namespace
 {
-	// Pitch only. yaw and headYaw are already carrying the silent angle by the
-	// time rendering happens, and swapping them again here would apply the
-	// offset twice.
-	bool  swapped = false;
-	float saved_pitch = 0.0f;
-	float saved_last_pitch = 0.0f;
-	bool  swapped_last = false;
-
-	// Cheapest test first. This runs once per frame for every living entity in
-	// view -- at a high frame rate with a crowded scene that is tens of
-	// thousands of calls a second, and the hook stays installed whether or not
-	// the feature is switched on. Reading two bools costs nothing; looking the
-	// local player up through JNI to then discard it does not.
-	if ((globals::silent_aim_enabled || globals::silent_rotation_enabled ||
-	     globals::killaura_enabled) &&
-	    entity && g_mid_get_pitch && g_mid_set_pitch)
+	struct scoped_model_pitch
 	{
-		jobject me = fetch_local_player(env);
-		const bool mine = me && env->IsSameObject(me, entity);
-		if (me) env->DeleteLocalRef(me);
+		JNIEnv* env = nullptr;
+		jobject entity = nullptr;
+		bool    swapped = false;
+		bool    swapped_last = false;
+		float   saved_pitch = 0.0f;
+		float   saved_last_pitch = 0.0f;
 
-		if (mine)
+		scoped_model_pitch(JNIEnv* e, jobject ent) : env(e), entity(ent)
 		{
-			const silent_angles_t want = resolve_silent_angles(env, entity);
-			if (want.active)
-			{
-				saved_pitch = env->CallFloatMethod(entity, g_mid_get_pitch);
-				if (env->ExceptionCheck()) env->ExceptionClear();
-				else
-				{
-					env->CallVoidMethod(entity, g_mid_set_pitch, want.pitch);
-					if (env->ExceptionCheck()) env->ExceptionClear();
-					swapped = true;
+			// Cheapest test first. This runs once per frame for every living
+			// entity in view -- at a high frame rate with a crowded scene that is
+			// tens of thousands of calls a second, and the hook stays installed
+			// whether or not the feature is switched on. Reading two bools costs
+			// nothing; looking the local player up through JNI to then discard it
+			// does not.
+			if (!(globals::silent_aim_enabled || globals::silent_rotation_enabled ||
+			      globals::killaura_enabled))
+				return;
+			if (!entity || !g_mid_get_pitch || !g_mid_set_pitch)
+				return;
 
-					// lastPitch has to move with it. The renderer does not read
-					// the field, it interpolates lastPitch -> pitch by the frame
-					// fraction, so setting only one end makes every frame show a
-					// different blend of the real and the silent angle: the head
-					// sweeps between them at the frame rate, which reads as
-					// shaking, and for most of each tick it is still showing the
-					// real value. Both ends equal means the interpolation is a
-					// constant and the model simply holds the silent pitch.
-					if (g_fid_last_pitch)
-					{
-						saved_last_pitch = env->GetFloatField(entity, g_fid_last_pitch);
-						if (env->ExceptionCheck()) env->ExceptionClear();
-						else
-						{
-							env->SetFloatField(entity, g_fid_last_pitch, want.pitch);
-							if (env->ExceptionCheck()) env->ExceptionClear();
-							swapped_last = true;
-						}
-					}
-				}
+			jobject me = fetch_local_player(env);
+			const bool mine = me && env->IsSameObject(me, entity);
+			if (me) env->DeleteLocalRef(me);
+			if (!mine)
+				return;
+
+			const silent_angles_t want = resolve_silent_angles(env, entity);
+			if (!want.active)
+				return;
+
+			saved_pitch = env->CallFloatMethod(entity, g_mid_get_pitch);
+			if (env->ExceptionCheck()) { env->ExceptionClear(); return; }
+
+			env->CallVoidMethod(entity, g_mid_set_pitch, want.pitch);
+			if (env->ExceptionCheck()) { env->ExceptionClear(); return; }
+			swapped = true;
+
+			// lastPitch has to move with it. The renderer does not read the field,
+			// it interpolates lastPitch -> pitch by the frame fraction, so setting
+			// only one end makes every frame show a different blend of the real
+			// and the silent angle: the head sweeps between them at the frame
+			// rate, which reads as shaking, and for most of each tick it is still
+			// showing the real value. Both ends equal means the interpolation is a
+			// constant and the model simply holds the silent pitch.
+			if (!g_fid_last_pitch)
+				return;
+
+			saved_last_pitch = env->GetFloatField(entity, g_fid_last_pitch);
+			if (env->ExceptionCheck()) { env->ExceptionClear(); return; }
+			env->SetFloatField(entity, g_fid_last_pitch, want.pitch);
+			if (env->ExceptionCheck()) { env->ExceptionClear(); return; }
+			swapped_last = true;
+		}
+
+		~scoped_model_pitch()
+		{
+			if (swapped)
+			{
+				env->CallVoidMethod(entity, g_mid_set_pitch, saved_pitch);
+				if (env->ExceptionCheck()) env->ExceptionClear();
+			}
+			if (swapped_last)
+			{
+				env->SetFloatField(entity, g_fid_last_pitch, saved_last_pitch);
+				if (env->ExceptionCheck()) env->ExceptionClear();
 			}
 		}
-	}
+	};
+}
+
+// 1.21.2+: the pitch is baked into the render state here.
+static void hkUpdateRenderState(JNIEnv* env, jobject thiz, jobject entity, jobject state, jfloat tick_delta)
+{
+	scoped_model_pitch hold(env, entity);
 
 	if (ORIG_update_render_state && g_rs_class && thiz)
 	{
@@ -614,18 +642,28 @@ static void hkUpdateRenderState(JNIEnv* env, jobject thiz, jobject entity, jobje
 		                              entity, state, tick_delta);
 		if (env->ExceptionCheck()) env->ExceptionClear();
 	}
+}
 
-	if (swapped)
+// 1.20 - 1.21.1: no render state exists, and the model's pitch is read inside
+// the render call itself.
+static jmethodID ORIG_living_render = nullptr, g_mid_living_render = nullptr;
+static jclass    g_living_render_class = nullptr;
+static bool      g_living_render_detached_ok = true;
+
+static void hkLivingRendererRender(JNIEnv* env, jobject thiz, jobject entity, jfloat yaw,
+                                   jfloat tick_delta, jobject pose_stack, jobject buffers,
+                                   jint light)
+{
+	scoped_model_pitch hold(env, entity);
+
+	if (ORIG_living_render && g_living_render_class && thiz)
 	{
-		env->CallVoidMethod(entity, g_mid_set_pitch, saved_pitch);
-		if (env->ExceptionCheck()) env->ExceptionClear();
-	}
-	if (swapped_last)
-	{
-		env->SetFloatField(entity, g_fid_last_pitch, saved_last_pitch);
+		env->CallNonvirtualVoidMethod(thiz, g_living_render_class, ORIG_living_render,
+		                              entity, yaw, tick_delta, pose_stack, buffers, light);
 		if (env->ExceptionCheck()) env->ExceptionClear();
 	}
 }
+
 
 static void hkUpdateCrosshair(JNIEnv* env, jobject thiz, jfloat tick_delta)
 {
@@ -1176,6 +1214,13 @@ bool enhance::modules::aiming::tick_movement_hook::init()
 			{ sdk::mappings::living_renderer_class_sig, sdk::mappings::update_render_state_name,
 			  sdk::mappings::update_render_state_sig, (void*)hkUpdateRenderState,
 			  &ORIG_update_render_state, &g_hooked_mid_rs, &g_rs_class, "model pitch" },
+			// Only one of these two ever resolves: the render-state hook from
+			// 1.21.2 on, this one before it. Binding both would apply the swap
+			// twice on a version that somehow had both.
+			{ sdk::mappings::living_renderer_class_sig, sdk::mappings::living_renderer_render_name,
+			  sdk::mappings::living_renderer_render_sig, (void*)hkLivingRendererRender,
+			  &ORIG_living_render, &g_mid_living_render, &g_living_render_class,
+			  "model pitch (pre-1.21.2)" },
 			{ sdk::mappings::input_class_sig, sdk::mappings::input_tick_name,
 			  sdk::mappings::input_tick_sig, input_tick_callback(),
 			  &ORIG_input_tick, &g_mid_input_tick, &g_input_class, "movement input" },
