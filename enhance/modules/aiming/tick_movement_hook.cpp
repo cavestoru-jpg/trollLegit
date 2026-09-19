@@ -67,6 +67,13 @@ static jfieldID g_fid_render_pitch  = nullptr;
 // a different translation unit and this must not be optimised away.
 static std::atomic<bool> g_swapping{false};
 
+// The yaw delta the tick wrap is holding right now, published for the input hook.
+// Recomputing it there is not the same thing: ClientInput.tick runs INSIDE this
+// wrap, so the player's yaw is already the silent one and "silent minus current"
+// collapses to zero the moment silent aim supplies an absolute angle. That is
+// exactly why Silent correction behaved like Strict.
+static std::atomic<float> g_applied_dyaw{0.0f};
+
 // Diagnostics only: the pitch as it stood when the original tick returned.
 // If this still carries the silent value then the fake angle survived the
 // whole tick, which means the look packet was built from it; if it has
@@ -426,38 +433,72 @@ static bool      g_input_detached_ok = true;
 
 static void rotate_input_for_silent(JNIEnv* env)
 {
+	// Throttled so a per-tick line does not bury the log, but present for every
+	// distinct reason: "Silent did nothing" and "Silent was never asked" looked
+	// identical from the outside, which is how it went unnoticed that the delta
+	// was always zero.
+	static ULONGLONG s_next_log = 0;
+	const ULONGLONG now = GetTickCount64();
+	const bool say = now >= s_next_log;
+	auto note = [&](const char* why)
+	{
+		if (!say) return;
+		s_next_log = now + 1000;
+		logger::log(std::string("[silent] input rotation skipped: ") + why);
+	};
+
 	if (globals::aiming_movement_correction != 2)
 		return;
 
 	jobject player = fetch_local_player(env);
 	if (!player)
+	{
+		note("no local player");
 		return;
+	}
 
 	do
 	{
-		if (!g_mid_get_yaw)
-			break;
+		// The delta the tick wrap is holding, when it is holding one. Inside that
+		// wrap the player's yaw IS the silent yaw, so asking for the difference
+		// again yields nothing.
+		float delta = g_applied_dyaw.load(std::memory_order_acquire);
 
-		const silent_angles_t want = resolve_silent_angles(env, player);
-		if (!want.active)
-			break;
+		if (delta == 0.0f)
+		{
+			// Not inside the wrap (ClientInput.tick can run ahead of the player
+			// tick): work it out from the angles, which are still the real ones
+			// here.
+			if (!g_mid_get_yaw)
+			{
+				note("yaw getter unresolved");
+				break;
+			}
+			const silent_angles_t want = resolve_silent_angles(env, player);
+			if (!want.active)
+			{
+				note("no silent angle to correct for");
+				break;
+			}
+			const float real_yaw = env->CallFloatMethod(player, g_mid_get_yaw);
+			if (env->ExceptionCheck()) { env->ExceptionClear(); note("yaw read threw"); break; }
+			delta = enhance::modules::aiming::angle_difference(want.yaw, real_yaw);
+		}
 
-		const float real_yaw = env->CallFloatMethod(player, g_mid_get_yaw);
-		if (env->ExceptionCheck()) { env->ExceptionClear(); break; }
-
-		// Shortest way round, so a target across the wrap point does not rotate
-		// the input the long way to the same bearing.
-		float delta = want.yaw - real_yaw;
-		while (delta <= -180.0f) delta += 360.0f;
-		while (delta > 180.0f)   delta -= 360.0f;
 		if (delta > -0.01f && delta < 0.01f)
+		{
+			note("delta is zero");
 			break;
+		}
 
 		auto input = sdk::compat::read_input(env, player);
 		if (!input.valid)
+		{
+			note("this version's input shape could not be read");
 			break;
+		}
 		if (input.forward == 0.0f && input.sideways == 0.0f)
-			break;
+			break;   // standing still: nothing to rotate, and not worth a line
 
 		// The game maps (sideways, forward) into the world with the rotation it
 		// is about to report, so undoing that rotation here leaves the world
@@ -471,7 +512,21 @@ static void rotate_input_for_silent(JNIEnv* env)
 		rotated.forward  = input.forward * c - input.sideways * sn;
 		rotated.valid = true;
 
-		sdk::compat::write_input(env, player, rotated);
+		if (!sdk::compat::write_input(env, player, rotated))
+		{
+			note("input could not be written back");
+			break;
+		}
+
+		if (say)
+		{
+			s_next_log = now + 1000;
+			char line[160];
+			sprintf_s(line, sizeof(line),
+				"[silent] input rotated by %.1f deg: (%.2f, %.2f) -> (%.2f, %.2f)",
+				-delta, input.sideways, input.forward, rotated.sideways, rotated.forward);
+			logger::log(line);
+		}
 	} while (false);
 
 	env->DeleteLocalRef(player);
@@ -762,6 +817,7 @@ static void hkTick(JNIEnv* env, jobject thiz)
 			}
 
 			swapped = true;
+			g_applied_dyaw.store(dyaw, std::memory_order_release);
 			g_swapping.store(true, std::memory_order_release);
 		}
 	}
@@ -798,6 +854,7 @@ static void hkTick(JNIEnv* env, jobject thiz)
 	if (swapped)
 	{
 		g_swapping.store(false, std::memory_order_release);
+		g_applied_dyaw.store(0.0f, std::memory_order_release);
 
 		// Put back what the CAMERA reads, and nothing else.
 		//
