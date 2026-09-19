@@ -897,6 +897,30 @@ namespace sdk
 		extern const char* pose_stack_translate_name;
 		extern const char* pose_stack_translate_sig;
 
+		// The client's own glyph atlas, handed to the game as a texture so its own
+		// name tags -- panel, colours, health, distance -- can be submitted as
+		// textured quads instead of being replaced by the game's tag renderer.
+		extern const char* native_image_class_sig;
+		extern const char* native_image_pointer_name;
+		extern const char* native_image_pointer_sig;
+		extern const char* dynamic_texture_class_sig;
+		extern const char* dynamic_texture_init_name;
+		extern const char* dynamic_texture_init_sig;
+		extern const char* dynamic_texture_pixels_name;
+		extern const char* dynamic_texture_pixels_sig;
+		extern const char* dynamic_texture_upload_name;
+		extern const char* dynamic_texture_upload_sig;
+		extern const char* texture_manager_class_sig;
+		extern const char* texture_manager_register_name;
+		extern const char* texture_manager_register_sig;
+		extern const char* minecraft_texture_manager_name;
+		extern const char* minecraft_texture_manager_sig;
+		extern const char* identifier_class_sig;
+		extern const char* identifier_of_name;
+		extern const char* identifier_of_sig;
+		extern const char* render_type_text_see_through_name;
+		extern const char* render_type_text_see_through_sig;
+
 		// The game's own vertex sink, and the transform handed to the callback
 		// beside it. addVertex takes the pose overload so the geometry lands in the
 		// same space as everything else submitted that frame; setNormal is only

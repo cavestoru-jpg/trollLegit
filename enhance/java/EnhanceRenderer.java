@@ -58,6 +58,7 @@ public final class EnhanceRenderer implements InvocationHandler {
     public static final int KIND_WORLD_EVENT = 0;
     public static final int KIND_SUBMIT_TRIS = 1;
     public static final int KIND_SUBMIT_LINES = 2;
+    public static final int KIND_SUBMIT_TEXT = 3;
 
     private final int kind;
 
@@ -110,6 +111,10 @@ public final class EnhanceRenderer implements InvocationHandler {
     // The staged geometry the submit callbacks read. Published once per frame,
     // before submitting, and read back during the drain.
     private static ByteBuffer submitBuffer;
+    private static ByteBuffer submitTextBuffer;
+    private static int submitTextVertices;
+    private static int textElements;
+    private static boolean textAsQuads;
     private static int submitTriVertices;
     private static int submitLineVertices;
 
@@ -258,6 +263,22 @@ public final class EnhanceRenderer implements InvocationHandler {
         }
     }
 
+    /**
+     * The client's own name tags: nine floats a vertex -- x, y, z, u, v, r, g,
+     * b, a -- against its own glyph atlas, which the native side has registered
+     * as a texture the game owns.
+     */
+    public static void stageText(ByteBuffer buffer, int vertices, int elements,
+                                 boolean quads) {
+        if (buffer != null) {
+            buffer.order(ByteOrder.nativeOrder());
+        }
+        submitTextBuffer = buffer;
+        submitTextVertices = vertices;
+        textElements = elements;
+        textAsQuads = quads;
+    }
+
     /** See {@link #trisAsQuads}. */
     public static void setTrisAsQuads(boolean value) {
         trisAsQuads = value;
@@ -299,6 +320,55 @@ public final class EnhanceRenderer implements InvocationHandler {
     /** A proxy handler bound to one of the two submit ranges. */
     public static Object submitHandler(int kind) {
         return new EnhanceRenderer(kind);
+    }
+
+    /** The text stream, which carries a texture coordinate the boxes do not. */
+    private static void emitText(Object pose, Object consumer, int count, int elements,
+                                 boolean quads) {
+        final ByteBuffer buf = submitTextBuffer;
+        if (buf == null || mAddVertex == null || count <= 0) {
+            return;
+        }
+
+        try {
+            for (int i = 0; i < count; i++) {
+                final int v = quads ? (i / 4) * 3 + Math.min(i % 4, 2) : i;
+                final int base = v * TEXT_STRIDE;
+
+                mAddVertex.invoke(consumer, pose,
+                                  Float.valueOf(buf.getFloat(base)),
+                                  Float.valueOf(buf.getFloat(base + 4)),
+                                  Float.valueOf(buf.getFloat(base + 8)));
+
+                if ((elements & ELEM_COLOR) != 0) {
+                    mSetColor.invoke(consumer,
+                                     Integer.valueOf(channel(buf.getFloat(base + 20))),
+                                     Integer.valueOf(channel(buf.getFloat(base + 24))),
+                                     Integer.valueOf(channel(buf.getFloat(base + 28))),
+                                     Integer.valueOf(channel(buf.getFloat(base + 32))));
+                }
+                if ((elements & ELEM_UV0) != 0) {
+                    mSetUv.invoke(consumer, Float.valueOf(buf.getFloat(base + 12)),
+                                  Float.valueOf(buf.getFloat(base + 16)));
+                }
+                if ((elements & ELEM_UV1) != 0) {
+                    mSetUv1.invoke(consumer, Integer.valueOf(0), Integer.valueOf(10));
+                }
+                if ((elements & ELEM_UV2) != 0) {
+                    mSetUv2.invoke(consumer, Integer.valueOf(FULL_BRIGHT),
+                                   Integer.valueOf(FULL_BRIGHT));
+                }
+                if ((elements & ELEM_NORMAL) != 0) {
+                    mSetNormal.invoke(consumer, pose, Float.valueOf(0.0f),
+                                      Float.valueOf(1.0f), Float.valueOf(0.0f));
+                }
+                if ((elements & ELEM_LINE_WIDTH) != 0) {
+                    mSetLineWidth.invoke(consumer, Float.valueOf(LINE_WIDTH));
+                }
+            }
+        } catch (Throwable t) {
+            mAddVertex = null;
+        }
     }
 
     private static int channel(float f) {
@@ -433,6 +503,14 @@ public final class EnhanceRenderer implements InvocationHandler {
         // The submit proxies are stateless and have nothing to do with the
         // Fabric listener's lifecycle, so they are dispatched ahead of its guards.
         if (kind != KIND_WORLD_EVENT) {
+            if (args != null && args.length >= 2 && kind == KIND_SUBMIT_TEXT) {
+                final int staged = submitTextVertices;
+                emitText(args[0], args[1],
+                         textAsQuads ? (staged / 3) * 4 : staged,
+                         textElements, textAsQuads);
+                return null;
+            }
+
             if (args != null && args.length >= 2) {
                 final boolean lines = kind == KIND_SUBMIT_LINES;
                 final int staged = lines ? submitLineVertices : submitTriVertices;

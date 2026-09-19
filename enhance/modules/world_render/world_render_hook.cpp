@@ -204,6 +204,16 @@ namespace
 	jmethodID g_mid_pose_translate = nullptr;
 	bool      g_tags_ready = false;
 
+	// Our own tags, drawn the way the overlay draws them, through a render type
+	// bound to our glyph atlas. Falls back to the game's tag renderer if the
+	// atlas cannot be handed over.
+	jclass    g_cgr_cls = nullptr;              // GlobalRef
+	jobject   g_rt_text = nullptr;              // GlobalRef
+	jobject   g_proxy_text = nullptr;           // GlobalRef
+	int       g_mask_text = 0;
+	bool      g_text_as_quads = false;
+	bool      g_atlas_tried = false;
+
 	jmethodID g_renderer_render_text = nullptr;
 	jmethodID g_renderer_upload_font = nullptr;
 	bool      g_font_uploaded = false;
@@ -897,34 +907,39 @@ namespace
 		return false;
 	}
 
+	// The direct buffer wrapping g_text. It has to be rebuilt whenever the
+	// vector reallocates, and both the OpenGL path and the submit path want it.
+	jobject ensure_text_buffer(JNIEnv* env)
+	{
+		if (g_text_buffer && g_text_buffer_floats == g_text.capacity())
+			return g_text_buffer;
+
+		if (g_text_buffer)
+		{
+			env->DeleteGlobalRef(g_text_buffer);
+			g_text_buffer = nullptr;
+		}
+
+		jobject local = env->NewDirectByteBuffer(g_text.data(),
+			static_cast<jlong>(g_text.capacity() * sizeof(float)));
+		clear_exception(env);
+		if (!local)
+			return nullptr;
+
+		g_text_buffer = env->NewGlobalRef(local);
+		env->DeleteLocalRef(local);
+		g_text_buffer_floats = g_text.capacity();
+		return g_text_buffer;
+	}
+
 	void submit_text(JNIEnv* env, const float mvp[16])
 	{
 		if (g_text.empty() || !g_renderer_render_text)
 			return;
 		if (!ensure_font_uploaded(env))
 			return;
-
-		if (!g_text_buffer || g_text_buffer_floats != g_text.capacity())
-		{
-			if (g_text_buffer)
-			{
-				env->DeleteGlobalRef(g_text_buffer);
-				g_text_buffer = nullptr;
-			}
-
-			jobject local = env->NewDirectByteBuffer(g_text.data(),
-				static_cast<jlong>(g_text.capacity() * sizeof(float)));
-			clear_exception(env);
-			if (!local)
-				return;
-
-			g_text_buffer = env->NewGlobalRef(local);
-			env->DeleteLocalRef(local);
-			g_text_buffer_floats = g_text.capacity();
-
-			if (!g_text_buffer)
-				return;
-		}
+		if (!ensure_text_buffer(env))
+			return;
 
 		jfloatArray mvp_array = env->NewFloatArray(16);
 		clear_exception(env);
@@ -945,6 +960,10 @@ namespace
 
 	void submit_boxes(JNIEnv* env, const float mvp[16]);
 	void submit_tags_native(JNIEnv* env, double cam_x, double cam_y, double cam_z);
+	jobject ensure_text_buffer(JNIEnv* env);
+	std::string read_topology(JNIEnv* env, jobject render_type);
+	bool describe_format(JNIEnv* env, jobject render_type, const char* what, int& out_mask);
+	jobject make_proxy(JNIEnv* env, jclass iface, jint kind);
 
 	// Collects the boxes and tags for this frame and hands them to the Java
 	// renderer.
@@ -1183,6 +1202,180 @@ namespace
 		}
 	}
 
+	// Hands ImGui's glyph atlas to the game as a texture, once, and builds the
+	// render type that names it.
+	//
+	// Deferred like the OpenGL upload: the atlas is only guaranteed built after
+	// the overlay has drawn a frame, which is long after init().
+	bool register_atlas_texture(JNIEnv* env)
+	{
+		if (g_rt_text)
+			return true;
+		if (g_atlas_tried)
+			return false;
+
+		if (!sdk::mappings::have(sdk::mappings::render_type_text_see_through_name) ||
+		    !sdk::mappings::have(sdk::mappings::dynamic_texture_init_name))
+			return false;
+
+		if (!ImGui::GetCurrentContext())
+			return false;
+
+		ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+		unsigned char* pixels = nullptr;
+		int width = 0, height = 0;
+		if (atlas)
+			atlas->GetTexDataAsRGBA32(&pixels, &width, &height);
+		if (!pixels || width <= 0 || height <= 0)
+			return false;
+
+		g_atlas_tried = true;
+
+		jclass dt_cls = sdk::classloader::find_class(env,
+			sdk::mappings::dynamic_texture_class_sig);
+		jclass tm_cls = sdk::classloader::find_class(env,
+			sdk::mappings::texture_manager_class_sig);
+		jclass id_cls = sdk::classloader::find_class(env, sdk::mappings::identifier_class_sig);
+		jclass types_cls = sdk::classloader::find_class(env,
+			sdk::mappings::render_types_class_sig);
+		if (!dt_cls || !tm_cls || !id_cls || !types_cls)
+			return false;
+
+		jmethodID dt_init = env->GetMethodID(dt_cls,
+			sdk::mappings::dynamic_texture_init_name, sdk::mappings::dynamic_texture_init_sig);
+		jmethodID dt_pixels = env->GetMethodID(dt_cls,
+			sdk::mappings::dynamic_texture_pixels_name,
+			sdk::mappings::dynamic_texture_pixels_sig);
+		jmethodID dt_upload = env->GetMethodID(dt_cls,
+			sdk::mappings::dynamic_texture_upload_name,
+			sdk::mappings::dynamic_texture_upload_sig);
+		jmethodID id_of = env->GetStaticMethodID(id_cls,
+			sdk::mappings::identifier_of_name, sdk::mappings::identifier_of_sig);
+		jmethodID tm_register = env->GetMethodID(tm_cls,
+			sdk::mappings::texture_manager_register_name,
+			sdk::mappings::texture_manager_register_sig);
+		jmethodID mc_tm = env->GetMethodID(g_mc_class,
+			sdk::mappings::minecraft_texture_manager_name,
+			sdk::mappings::minecraft_texture_manager_sig);
+		clear_exception(env);
+		if (!dt_init || !dt_pixels || !dt_upload || !id_of || !tm_register || !mc_tm)
+		{
+			logger::log_error("[world_render] the texture path did not resolve -- name tags "
+			                  "fall back to the game's own renderer");
+			return false;
+		}
+
+		jstring label = env->NewStringUTF("enhance-glyphs");
+		jobject tex = env->NewObject(dt_cls, dt_init, label, (jint)width, (jint)height,
+		                             JNI_FALSE);
+		report_exception(env, "new DynamicTexture");
+		env->DeleteLocalRef(label);
+		if (!tex)
+			return false;
+
+		// One memcpy through the image's own pointer. setPixel would be a
+		// million calls for a 1024x1024 atlas.
+		jobject img = env->CallObjectMethod(tex, dt_pixels);
+		clear_exception(env);
+		if (img)
+		{
+			jclass ni_cls = env->GetObjectClass(img);
+			jmethodID ni_ptr = ni_cls
+				? env->GetMethodID(ni_cls, sdk::mappings::native_image_pointer_name,
+				                   sdk::mappings::native_image_pointer_sig)
+				: nullptr;
+			clear_exception(env);
+			if (ni_cls)
+				env->DeleteLocalRef(ni_cls);
+
+			const jlong addr = ni_ptr ? env->CallLongMethod(img, ni_ptr) : 0;
+			clear_exception(env);
+			if (addr)
+				memcpy(reinterpret_cast<void*>(static_cast<uintptr_t>(addr)), pixels,
+				       static_cast<size_t>(width) * height * 4);
+			env->DeleteLocalRef(img);
+
+			if (!addr)
+			{
+				env->DeleteLocalRef(tex);
+				return false;
+			}
+		}
+
+		env->CallVoidMethod(tex, dt_upload);
+		report_exception(env, "DynamicTexture.upload");
+
+		jstring ns = env->NewStringUTF("enhance");
+		jstring path = env->NewStringUTF("glyphs");
+		jobject id = env->CallStaticObjectMethod(id_cls, id_of, ns, path);
+		report_exception(env, "Identifier.fromNamespaceAndPath");
+		env->DeleteLocalRef(ns);
+		env->DeleteLocalRef(path);
+		if (!id)
+		{
+			env->DeleteLocalRef(tex);
+			return false;
+		}
+
+		jobject mc = env->GetStaticObjectField(g_mc_class, g_fid_mc_instance);
+		jobject tm = mc ? env->CallObjectMethod(mc, mc_tm) : nullptr;
+		clear_exception(env);
+		if (tm)
+		{
+			env->CallVoidMethod(tm, tm_register, id, tex);
+			report_exception(env, "TextureManager.register");
+			env->DeleteLocalRef(tm);
+		}
+		if (mc)
+			env->DeleteLocalRef(mc);
+		env->DeleteLocalRef(tex);
+
+		jmethodID mid_text = env->GetStaticMethodID(types_cls,
+			sdk::mappings::render_type_text_see_through_name,
+			sdk::mappings::render_type_text_see_through_sig);
+		clear_exception(env);
+		jobject rt = mid_text ? env->CallStaticObjectMethod(types_cls, mid_text, id) : nullptr;
+		report_exception(env, "RenderTypes.textSeeThrough");
+		env->DeleteLocalRef(id);
+		if (!rt)
+			return false;
+
+		g_rt_text = env->NewGlobalRef(rt);
+		env->DeleteLocalRef(rt);
+
+		const std::string topo = read_topology(env, g_rt_text);
+		g_text_as_quads = (topo == "QUADS");
+		if (!topo.empty() && topo != "QUADS" && topo != "TRIANGLES")
+		{
+			logger::log_error("[world_render] the text render type draws " + topo +
+			                  ", which our glyph quads are not -- falling back");
+			env->DeleteGlobalRef(g_rt_text);
+			g_rt_text = nullptr;
+			return false;
+		}
+
+		if (!describe_format(env, g_rt_text, "name tags", g_mask_text))
+		{
+			env->DeleteGlobalRef(g_rt_text);
+			g_rt_text = nullptr;
+			return false;
+		}
+
+		if (g_cgr_cls)
+			g_proxy_text = make_proxy(env, g_cgr_cls, 3);   // KIND_SUBMIT_TEXT
+		if (!g_proxy_text)
+		{
+			env->DeleteGlobalRef(g_rt_text);
+			g_rt_text = nullptr;
+			return false;
+		}
+
+		logger::log("[world_render] the glyph atlas is a game texture now -- name tags are "
+		            "the client's own again, panel and all (topology " +
+		            (topo.empty() ? "unknown" : topo) + ")");
+		return true;
+	}
+
 	// One name tag per target, drawn by the game.
 	//
 	// The pose is moved to the anchor and the offset argument left at zero,
@@ -1206,6 +1399,35 @@ namespace
 		{
 			env->DeleteLocalRef(camera);
 			return;
+		}
+
+		// Ours, if the atlas made it across. Everything the overlay draws -- the
+		// panel, the colours, the health readout, the distance -- is already in
+		// g_text; it only ever needed somewhere to go.
+		if (register_atlas_texture(env) && !g_text.empty() && g_mid_stage_geometry)
+		{
+			jobject buf = ensure_text_buffer(env);
+			if (buf)
+			{
+				jmethodID stage = env->GetStaticMethodID(g_renderer_class, "stageText",
+					"(Ljava/nio/ByteBuffer;IIZ)V");
+				clear_exception(env);
+				if (stage)
+				{
+					env->CallStaticVoidMethod(g_renderer_class, stage, buf,
+						static_cast<jint>(g_text.size() / k_floats_per_text_vertex),
+						(jint)g_mask_text, g_text_as_quads ? JNI_TRUE : JNI_FALSE);
+					clear_exception(env);
+
+					env->CallVoidMethod(ordered, g_mid_submit_custom,
+					                    g_frame_pose, g_rt_text, g_proxy_text);
+					report_exception(env, "submitCustomGeometry(text)");
+
+					env->DeleteLocalRef(ordered);
+					env->DeleteLocalRef(camera);
+					return;
+				}
+			}
 		}
 
 		for (const auto& tag : g_tags)
@@ -2048,6 +2270,7 @@ namespace
 		}
 
 		g_ordered_cls = (jclass)env->NewGlobalRef(ordered_cls);
+		g_cgr_cls = (jclass)env->NewGlobalRef(cgr_cls);
 		g_level_renderer_cls = (jclass)env->NewGlobalRef(lr_cls);
 
 		g_submit_mid = env->GetMethodID(lr_cls,
@@ -2707,7 +2930,7 @@ void enhance::modules::world_render_hook::shutdown()
 	if (env)
 	{
 		for (jobject* ref : { &g_rt_lines, &g_rt_tris, &g_proxy_tris, &g_proxy_lines,
-		                      &g_vec3_zero })
+		                      &g_vec3_zero, &g_rt_text, &g_proxy_text })
 		{
 			if (*ref)
 			{
@@ -2715,7 +2938,8 @@ void enhance::modules::world_render_hook::shutdown()
 				*ref = nullptr;
 			}
 		}
-		for (jclass* ref : { &g_ordered_cls, &g_level_renderer_cls, &g_component_cls })
+		for (jclass* ref : { &g_ordered_cls, &g_level_renderer_cls, &g_component_cls,
+		                     &g_cgr_cls })
 		{
 			if (*ref)
 			{

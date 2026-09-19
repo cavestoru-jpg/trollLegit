@@ -2637,11 +2637,35 @@
       "emit_name": "dynamic_texture_init_name",
       "emit_sig": "dynamic_texture_init_sig",
       "seed": {
-        "why": "the label supplier is only used for debug names"
+        "why": "the String overload, so no Supplier proxy has to exist for a debug label"
       },
       "owner": "net/minecraft/client/renderer/texture/DynamicTexture",
       "name": "<init>",
-      "desc": "(Ljava/util/function/Supplier;Lcom/mojang/blaze3d/platform/NativeImage;)V"
+      "desc": "(Ljava/lang/String;IIZ)V"
+    },
+    {
+      "id": "dynamic_texture_pixels",
+      "kind": "method",
+      "emit_name": "dynamic_texture_pixels_name",
+      "emit_sig": "dynamic_texture_pixels_sig",
+      "seed": {
+        "why": "the image it allocated, to be filled through its pointer"
+      },
+      "owner": "net/minecraft/client/renderer/texture/DynamicTexture",
+      "name": "getPixels",
+      "desc": "()Lcom/mojang/blaze3d/platform/NativeImage;"
+    },
+    {
+      "id": "dynamic_texture_upload",
+      "kind": "method",
+      "emit_name": "dynamic_texture_upload_name",
+      "emit_sig": "dynamic_texture_upload_sig",
+      "seed": {
+        "why": "pushes the filled pixels to the GPU, once"
+      },
+      "owner": "net/minecraft/client/renderer/texture/DynamicTexture",
+      "name": "upload",
+      "desc": "()V"
     },
     {
       "id": "entity_get_pitch_noarg",
@@ -2869,18 +2893,6 @@
         "why": "restoring the client's own name tags on the submit path. They are textured quads against our glyph atlas, so the game has to own that texture before it can draw them -- the vanilla tag renderer draws a string and loses the panel, the health bar and the friend colouring"
       },
       "class": "com/mojang/blaze3d/platform/NativeImage"
-    },
-    {
-      "id": "native_image_init",
-      "kind": "method",
-      "emit_name": "native_image_init_name",
-      "emit_sig": "native_image_init_sig",
-      "seed": {
-        "why": "an empty image of our atlas's size, to be filled through its own pointer"
-      },
-      "owner": "com/mojang/blaze3d/platform/NativeImage",
-      "name": "<init>",
-      "desc": "(IIZ)V"
     },
     {
       "id": "native_image_pointer",

@@ -968,17 +968,6 @@
     "resolve_from": "26.1",
     "why": "restoring the client's own name tags on the submit path. They are textured quads against our glyph atlas, so the game has to own that texture before it can draw them -- the vanilla tag renderer draws a string and loses the panel, the health bar and the friend colouring"
   },
-  "native_image_init": {
-    "new": true,
-    "kind": "method",
-    "owner": "com/mojang/blaze3d/platform/NativeImage",
-    "name": "<init>",
-    "desc": "(IIZ)V",
-    "emit_name": "native_image_init_name",
-    "emit_sig": "native_image_init_sig",
-    "resolve_from": "26.1",
-    "why": "an empty image of our atlas's size, to be filled through its own pointer"
-  },
   "native_image_pointer": {
     "new": true,
     "kind": "method",
@@ -1003,11 +992,11 @@
     "kind": "method",
     "owner": "net/minecraft/client/renderer/texture/DynamicTexture",
     "name": "<init>",
-    "desc": "(Ljava/util/function/Supplier;Lcom/mojang/blaze3d/platform/NativeImage;)V",
+    "desc": "(Ljava/lang/String;IIZ)V",
     "emit_name": "dynamic_texture_init_name",
     "emit_sig": "dynamic_texture_init_sig",
     "resolve_from": "26.1",
-    "why": "the label supplier is only used for debug names"
+    "why": "the String overload, so no Supplier proxy has to exist for a debug label"
   },
   "texture_manager_class": {
     "new": true,
@@ -1065,5 +1054,27 @@
     "emit_sig": "render_type_text_see_through_sig",
     "resolve_from": "1.21.11",
     "why": "textured and visible through walls, which is what a name tag on an ESP wants"
+  },
+  "dynamic_texture_pixels": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/client/renderer/texture/DynamicTexture",
+    "name": "getPixels",
+    "desc": "()Lcom/mojang/blaze3d/platform/NativeImage;",
+    "emit_name": "dynamic_texture_pixels_name",
+    "emit_sig": "dynamic_texture_pixels_sig",
+    "resolve_from": "26.1",
+    "why": "the image it allocated, to be filled through its pointer"
+  },
+  "dynamic_texture_upload": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/client/renderer/texture/DynamicTexture",
+    "name": "upload",
+    "desc": "()V",
+    "emit_name": "dynamic_texture_upload_name",
+    "emit_sig": "dynamic_texture_upload_sig",
+    "resolve_from": "26.1",
+    "why": "pushes the filled pixels to the GPU, once"
   }
 }
