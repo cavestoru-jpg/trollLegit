@@ -40,6 +40,10 @@ static jmethodID g_itemstack_is_empty_mid       = nullptr;
 static jmethodID g_itemstack_get_item_mid       = nullptr;
 static jclass    g_dyed_color_cls               = nullptr;
 static jmethodID g_dyed_get_color_mid           = nullptr;
+// Pre-1.20.5: the colour is read off the item through an interface it
+// implements, rather than from a component through a static helper.
+static jclass    g_dyeable_item_cls             = nullptr;
+static jmethodID g_dyeable_get_color_mid        = nullptr;
 
 static bool resolve_ids(JNIEnv* env)
 {
@@ -105,6 +109,25 @@ static bool resolve_ids(JNIEnv* env)
 		env->DeleteLocalRef(dyed_local);
 	}
 
+	// Before 1.20.5 there is no component and no static helper: dyed armour
+	// implements DyeableLeatherItem, and the colour is asked of the item. Only
+	// one of the two ever resolves, so colour matching works across the whole
+	// range instead of silently degrading to "any armour piece counts".
+	if (!g_color_lookup_available && sdk::mappings::have(sdk::mappings::dyeable_item_class_sig))
+	{
+		jclass dyeable_local = sdk::classloader::find_class(env, sdk::mappings::dyeable_item_class_sig);
+		if (dyeable_local)
+		{
+			g_dyeable_item_cls = (jclass)env->NewGlobalRef(dyeable_local);
+			g_dyeable_get_color_mid = env->GetMethodID(dyeable_local,
+				sdk::mappings::dyeable_get_color_name,
+				sdk::mappings::dyeable_get_color_sig);
+			if (env->ExceptionCheck()) { env->ExceptionClear(); g_dyeable_get_color_mid = nullptr; }
+			g_color_lookup_available = (g_dyeable_get_color_mid != nullptr);
+			env->DeleteLocalRef(dyeable_local);
+		}
+	}
+
 	g_ready = true;
 	return true;
 }
@@ -144,10 +167,19 @@ static ArmorColors read_armor(JNIEnv* env, jobject entity)
 		// the dye colour with a sentinel fallback: anything that comes back
 		// different is a dyed piece, which is exactly the signal we wanted.
 		int color = -1;
-		if (g_color_lookup_available && g_dyed_get_color_mid)
+		if (g_dyed_get_color_mid)
 		{
 			constexpr jint k_undyed = -1;
 			color = env->CallStaticIntMethod(g_dyed_color_cls, g_dyed_get_color_mid, stack, k_undyed);
+			if (env->ExceptionCheck()) { env->ExceptionClear(); color = -1; }
+		}
+		else if (g_dyeable_get_color_mid && g_dyeable_item_cls &&
+		         env->IsInstanceOf(item, g_dyeable_item_cls))
+		{
+			// Undyed leather answers with its default colour rather than a
+			// sentinel, so the instance check is what separates "not dyeable"
+			// from "dyed": anything that is not leather armour never gets here.
+			color = env->CallIntMethod(item, g_dyeable_get_color_mid, stack);
 			if (env->ExceptionCheck()) { env->ExceptionClear(); color = -1; }
 		}
 

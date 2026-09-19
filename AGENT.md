@@ -114,12 +114,30 @@ not have binds to `""`** — the same sentinel the header always used for absent
 
 | instance | namespace | Java | symbols | note |
 |---|---|---|---|---|
-| 1.20.4 Fabric | intermediary | 17 | 192/208 | oldest tested; riptide uses the void-returning shape |
-| 1.21.4 Fabric | intermediary | 21 | 198/208 | |
-| 1.21.4 vanilla | **obfuscated** | 21 | 198/208 | no loader at all: `find_class` falls through to `FindClass` |
-| 1.21.11 Fabric | intermediary | 21 | 204/208 | the version the client used to be pinned to |
-| 26.2 Fabric | **official** | 25 | 201/208 | all ten hooks attach |
-| 26.3 Fabric | official | 25 | 203/208 | |
+| 1.20.4 Fabric | intermediary | 17 | 209/225 | oldest tested; uses every pre-1.20.5 path |
+| 1.21.4 Fabric | intermediary | 21 | 213/225 | |
+| 1.21.4 vanilla | **obfuscated** | 21 | 213/225 | no loader at all: `find_class` falls through to `FindClass` |
+| 1.21.11 Fabric | intermediary | 21 | 217/225 | the version the client used to be pinned to |
+| 26.2 Fabric | **official** | 25 | 216/225 | |
+| 26.3 Fabric | official | 25 | 216/225 | SDL window, RenderPearl on its OpenGL backend |
+
+**Every feature sdk::caps tracks resolves on all 24 versions.** The one entry that
+reports absent is `rotation echo`, and that is a property of the game: no
+rotation-only teleport packet is sent before 1.21.2, so there is nothing to
+intercept. The runtime `[caps]` line is the authority -- it separates "unavailable"
+from "not applicable" for exactly this reason.
+
+Where a version could not do something, the client does it another way rather
+than switching the feature off:
+
+| feature | 1.20 - 1.20.4 | 1.20.5 - 1.21.1 | 1.21.2 - 1.21.4 | 1.21.5+ |
+|---|---|---|---|---|
+| reach | `MultiPlayerGameMode.getPickRange` (float) | the interaction-range attribute (double) | same | same |
+| team colours | `DyeableLeatherItem.getColor` | the dyed-colour component | same | same |
+| model pitch | `LivingEntityRenderer.render` | same | the render state | same |
+| movement input | `Input` impulse fields | same | the same fields on `ClientInput` | `ClientInput.moveVector` |
+| swing | `swing(Hand)` | same | same | `swing(Hand, SwingAnimation, boolean)` on 26.3 |
+| field of view | `getFov(...)` returning double | returning float | same | no-arg `Camera.getFov` on 26.1+ |
 
 The vanilla instance is `PrismLauncher/instances/vanilla-1.21.4` -- a copy of the
 Fabric one with the loader and intermediary components removed. Prism only

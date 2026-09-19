@@ -56,6 +56,9 @@ namespace sdk
 				{ feature::storage_esp,   { "world_get_block_state", "block_state_get_block",
 				                            "block_pos_class", nullptr },
 				  "the block-state lookup storage ESP scans with" },
+				// Either the component helper or the interface it replaced.
+				{ feature::team_colours,  { "dyeable_get_color", "dyeable_item_class", nullptr },
+				  "DyeableLeatherItem.getColor" },
 				{ feature::team_colours,  { "dyed_color_get_color", "dyed_color_component_class", nullptr },
 				  "the dyed-colour item component (1.20.5+)" },
 				// Two shapes, either will do: the impulse fields (wherever they
@@ -153,24 +156,38 @@ namespace sdk
 			"slot switch", "storage esp", "team colours", "input write",
 		};
 
+		// Features whose absence is a property of the game, not a gap in this
+		// client: there is nothing to build. Listing them beside real gaps sends
+		// the next reader looking for work that does not exist.
+		static bool not_applicable(feature f)
+		{
+			return f == feature::rotation_echo;
+		}
+
 		void log_summary()
 		{
 			std::string gated;
+			std::string absent_by_design;
 			for (int i = 0; i < (int)feature::count; ++i)
 			{
 				if (available((feature)i))
 					continue;
-				if (!gated.empty())
-					gated += ", ";
-				gated += k_names[i];
+				std::string& into = not_applicable((feature)i) ? absent_by_design : gated;
+				if (!into.empty())
+					into += ", ";
+				into += k_names[i];
 			}
 
 			if (gated.empty())
-				logger::log(std::string("[caps] every feature is supported on ") +
+				logger::log(std::string("[caps] every feature this version has is supported on ") +
 				            sdk::version::name());
 			else
 				logger::log("[caps] unavailable on " + std::string(sdk::version::name()) +
 				            ": " + gated);
+
+			if (!absent_by_design.empty())
+				logger::log("[caps] not applicable to " + std::string(sdk::version::name()) +
+				            ": " + absent_by_design);
 		}
 	}
 }

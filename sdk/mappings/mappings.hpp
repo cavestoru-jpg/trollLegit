@@ -896,6 +896,12 @@ namespace sdk
 		extern const char* living_renderer_render_name;
 		extern const char* living_renderer_render_sig;
 
+		// Dye colour before 1.20.5: an interface method on the item, not the
+		// static component helper that replaced it.
+		extern const char* dyeable_item_class_sig;
+		extern const char* dyeable_get_color_name;
+		extern const char* dyeable_get_color_sig;
+
 		// MultiPlayerGameMode.getPickRange -- the interaction distance before
 		// 1.20.5 introduced the entity_interaction_range attribute. Returns a
 		// float where the attribute getter returns a double.

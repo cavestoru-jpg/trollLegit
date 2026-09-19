@@ -411,5 +411,22 @@
     "emit_name": "pick_range_name",
     "emit_sig": "pick_range_sig",
     "why": "where the interaction distance comes from before 1.20.5, which replaced it with the entity_interaction_range attribute. Returns float, not double, so the hook needs its own callback"
+  },
+  "dyeable_item_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/world/item/DyeableLeatherItem",
+    "emit_sig": "dyeable_item_class_sig",
+    "why": "the interface dyed armour implements before 1.20.5 made the colour a component"
+  },
+  "dyeable_get_color": {
+    "new": true,
+    "kind": "method",
+    "owner": "net/minecraft/world/item/DyeableLeatherItem",
+    "name": "getColor",
+    "desc": "(Lnet/minecraft/world/item/ItemStack;)I",
+    "emit_name": "dyeable_get_color_name",
+    "emit_sig": "dyeable_get_color_sig",
+    "why": "reads the dye colour off the item itself; replaced in 1.20.5 by the static DyedItemColor helper, which is why this is an instance call and that one is static"
   }
 }
