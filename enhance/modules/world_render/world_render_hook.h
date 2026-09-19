@@ -25,6 +25,12 @@ namespace enhance
 
 			bool is_attached();
 
+			// True while the hook is queued for the client thread but has not run
+			// yet. init() returns false in that window, and the caller must not read
+			// that as a refusal: unticking there turns the feature off before it can
+			// ever come up.
+			bool is_pending();
+
 			// Whether the mapping needed to attach is present at all. Lets the
 			// menu explain why the option is unavailable instead of silently
 			// doing nothing.

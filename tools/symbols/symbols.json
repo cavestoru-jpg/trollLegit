@@ -2506,6 +2506,16 @@
       ]
     },
     {
+      "id": "aabb_class",
+      "kind": "class",
+      "emit_name": null,
+      "emit_sig": "aabb_class_sig",
+      "seed": {
+        "why": "the entity bounding box the in-world ESP reads. It was the last hardcoded intermediary literal in world_render_hook, which is why the whole renderer refused to start on 26.x and on vanilla: class_238 does not exist there"
+      },
+      "class": "net/minecraft/world/phys/AABB"
+    },
+    {
       "id": "abstract_chest_block_class",
       "kind": "class",
       "emit_name": null,

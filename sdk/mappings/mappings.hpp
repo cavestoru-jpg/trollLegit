@@ -337,6 +337,11 @@ namespace sdk
 		// https://maven.fabricmc.net/docs/yarn-1.21.11+build.5/net/minecraft/entity/Entity.html#setPitch(float)
 		extern const char* entity_set_pitch_sig;
 		// https://maven.fabricmc.net/docs/yarn-1.21.11+build.5/net/minecraft/entity/Entity.html#getBoundingBox()
+		// The bounding box itself. Was hardcoded as class_238 in the in-world
+		// renderer, which is why that renderer refused to start on 26.x and on
+		// vanilla -- the intermediary name exists in neither.
+		extern const char* aabb_class_sig;
+
 		extern const char* get_bounding_box_name;
 		// https://maven.fabricmc.net/docs/yarn-1.21.11+build.5/net/minecraft/entity/Entity.html#getBoundingBox()
 		extern const char* get_bounding_box_sig;

@@ -1380,6 +1380,7 @@ namespace
 	jmethodID g_hooked_submit_entities = nullptr;
 	jmethodID g_submit_mid = nullptr;
 	bool      g_submit_attach_failed = false;
+	bool      g_submit_pending = false;
 	jclass    g_level_renderer_cls = nullptr;    // GlobalRef
 
 	// LevelRenderer.submitEntities. The frame is taking entity geometry and is
@@ -1641,9 +1642,15 @@ namespace
 		static ULONGLONG s_deadline = 0;
 
 		if (g_submit_ready)
+		{
+			g_submit_pending = false;
 			return submit_state::ready;
+		}
 		if (s_refused)
+		{
+			g_submit_pending = false;
 			return submit_state::unavailable;
+		}
 
 		if (!s_resolved)
 		{
@@ -1681,6 +1688,7 @@ namespace
 			return submit_state::unavailable;
 		}
 
+		g_submit_pending = true;
 		return submit_state::pending;
 	}
 
@@ -1922,6 +1930,11 @@ void enhance::modules::world_render_hook::dump_mappings()
 		sdk::java::dump_render_mappings(env);
 }
 
+bool enhance::modules::world_render_hook::is_pending()
+{
+	return g_submit_pending;
+}
+
 bool enhance::modules::world_render_hook::is_attached()
 {
 	return g_attached;
@@ -1983,11 +1996,21 @@ bool enhance::modules::world_render_hook::init()
 	g_mc_class = global_class(env, sdk::mappings::minecraftclass_sig);
 	g_world_class = global_class(env, sdk::mappings::client_world_class_sig);
 	g_entity_class = global_class(env, sdk::mappings::entity_class_sig);
-	g_box_class = global_class(env, "net/minecraft/class_238");
+	g_box_class = global_class(env, sdk::mappings::aabb_class_sig);
 
 	if (!g_mc_class || !g_world_class || !g_entity_class || !g_box_class)
 	{
-		logger::log_error("[world_render] core Minecraft classes not resolvable");
+		// Name the one that failed. The previous message said only that
+		// something had not resolved, and the answer turned out to be a
+		// hardcoded intermediary name for AABB that exists on neither 26.x nor
+		// a vanilla jar -- a whole session's worth of the feature quietly
+		// unticking itself, which this line would have answered immediately.
+		std::string missing;
+		if (!g_mc_class)     missing += std::string(" ") + sdk::mappings::minecraftclass_sig;
+		if (!g_world_class)  missing += std::string(" ") + sdk::mappings::client_world_class_sig;
+		if (!g_entity_class) missing += std::string(" ") + sdk::mappings::entity_class_sig;
+		if (!g_box_class)    missing += std::string(" ") + sdk::mappings::aabb_class_sig;
+		logger::log_error("[world_render] these core classes did not resolve:" + missing);
 		return false;
 	}
 

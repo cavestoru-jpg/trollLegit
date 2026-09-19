@@ -341,7 +341,15 @@ void enhance::enhance_client::run()
 						try { ok = enhance::modules::world_render_hook::init(); } catch (...) {}
 						// Untick it rather than leave the menu claiming a
 						// feature that refused to install.
-						if (!ok)
+						// A queued attach is not a refusal. init() returns false
+						// while the hook is still waiting for the client thread,
+						// and unticking there turned the feature off before it
+						// ever had a chance to come up.
+						if (!ok && enhance::modules::world_render_hook::is_pending())
+						{
+							s_hook_tried = false;
+						}
+						else if (!ok)
 						{
 							globals::esp_world_render_enabled = false;
 							// Let the next tick try again. Latching this on a
