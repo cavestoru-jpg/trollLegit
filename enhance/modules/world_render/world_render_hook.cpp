@@ -318,10 +318,62 @@ namespace
 		return global;
 	}
 
+	// Edges as quads rather than lines, and the scale that keeps them a constant
+	// width on screen. Only set when the submit path is running with a
+	// see-through render type to put them through -- otherwise lines() is
+	// better geometry for a line.
+	bool  g_edges_as_quads = false;
+	float g_edge_scale = 0.0f;      // metres per pixel, per metre of distance
+
+	// Thickness in pixels. Matches what lines() draws closely enough that
+	// toggling "through walls" does not visibly change the outline's weight.
+	constexpr float k_edge_px = 1.8f;
+
 	void push_vertex(std::vector<float>& out, const float p[3], const float c[4])
 	{
 		out.push_back(p[0]); out.push_back(p[1]); out.push_back(p[2]);
 		out.push_back(c[0]); out.push_back(c[1]); out.push_back(c[2]); out.push_back(c[3]);
+	}
+
+	// One edge, as a quad lying in the plane that faces the camera.
+	//
+	// The geometry is camera-relative, so the direction to the edge is its own
+	// midpoint and the sideways direction is that crossed with the edge. Scaling
+	// the half-width by the edge's distance is what makes the thickness constant
+	// in pixels rather than in metres.
+	void push_edge_quad(const float a[3], const float b[3], const float col[4])
+	{
+		const float d[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+		const float m[3] = { (a[0] + b[0]) * 0.5f, (a[1] + b[1]) * 0.5f, (a[2] + b[2]) * 0.5f };
+
+		const float dist = std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+		if (dist <= 1.0e-4f || g_edge_scale <= 0.0f)
+			return;
+
+		float side[3] = {
+			d[1] * m[2] - d[2] * m[1],
+			d[2] * m[0] - d[0] * m[2],
+			d[0] * m[1] - d[1] * m[0],
+		};
+		const float len = std::sqrt(side[0] * side[0] + side[1] * side[1] + side[2] * side[2]);
+		if (len <= 1.0e-6f)
+			return;   // the edge points straight at the camera; nothing to widen
+
+		const float half = 0.5f * k_edge_px * dist * g_edge_scale;
+		for (float& v : side)
+			v = v / len * half;
+
+		const float p0[3] = { a[0] - side[0], a[1] - side[1], a[2] - side[2] };
+		const float p1[3] = { a[0] + side[0], a[1] + side[1], a[2] + side[2] };
+		const float p2[3] = { b[0] + side[0], b[1] + side[1], b[2] + side[2] };
+		const float p3[3] = { b[0] - side[0], b[1] - side[1], b[2] - side[2] };
+
+		push_vertex(g_tris, p0, col);
+		push_vertex(g_tris, p1, col);
+		push_vertex(g_tris, p2, col);
+		push_vertex(g_tris, p0, col);
+		push_vertex(g_tris, p2, col);
+		push_vertex(g_tris, p3, col);
 	}
 
 	void push_box(const double mn[3], const double mx[3], const float color[4],
@@ -341,8 +393,13 @@ namespace
 
 		for (const auto& e : sdk::render::box_edges)
 		{
-			push_vertex(g_lines, c[e[0]], color);
-			push_vertex(g_lines, c[e[1]], color);
+			if (g_edges_as_quads)
+				push_edge_quad(c[e[0]], c[e[1]], color);
+			else
+			{
+				push_vertex(g_lines, c[e[0]], color);
+				push_vertex(g_lines, c[e[1]], color);
+			}
 		}
 
 		if (!filled)
@@ -1002,6 +1059,18 @@ namespace
 		float mvp[16];
 		if (!sdk::render::build_view_projection(mvp))
 			return;
+
+		// Edges follow the fill through walls only when there is a see-through
+		// type to put them through. The atlas is registered lazily, so this is
+		// false for the first frame or two and the outline is drawn as lines
+		// until then -- visible only as the outline changing weight once.
+		{
+			const sdk::render::view_t& vw = sdk::render::view();
+			const float denom = vw.fov_y * vw.half_h;
+			g_edge_scale = denom > 0.0f ? 1.0f / denom : 0.0f;
+			g_edges_as_quads = g_frame_collector && globals::esp_world_through_walls &&
+			                   g_rt_text && g_edge_scale > 0.0f;
+		}
 
 		g_tris.clear();
 		g_lines.clear();
