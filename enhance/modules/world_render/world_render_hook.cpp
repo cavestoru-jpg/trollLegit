@@ -368,12 +368,41 @@ namespace
 		const float p2[3] = { b[0] + side[0], b[1] + side[1], b[2] + side[2] };
 		const float p3[3] = { b[0] - side[0], b[1] - side[1], b[2] - side[2] };
 
-		push_vertex(g_tris, p0, col);
-		push_vertex(g_tris, p1, col);
-		push_vertex(g_tris, p2, col);
-		push_vertex(g_tris, p0, col);
-		push_vertex(g_tris, p2, col);
-		push_vertex(g_tris, p3, col);
+		// Wind it so it faces the camera, the same way the tags had to be.
+		//
+		// This is the second time this bill has come due: a box survives being
+		// wound the wrong way because its twelve faces point everywhere and half
+		// are always right, but a flat quad has one good side and these have
+		// exactly the same problem the glyph quads did. The camera is at the
+		// origin here too, so the test is the same -- the normal must point back
+		// along the direction to the surface.
+		const float e1[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+		const float e2[3] = { p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2] };
+		const float n[3] = {
+			e1[1] * e2[2] - e1[2] * e2[1],
+			e1[2] * e2[0] - e1[0] * e2[2],
+			e1[0] * e2[1] - e1[1] * e2[0],
+		};
+		const bool forward = (n[0] * p0[0] + n[1] * p0[1] + n[2] * p0[2]) < 0.0f;
+
+		if (forward)
+		{
+			push_vertex(g_tris, p0, col);
+			push_vertex(g_tris, p1, col);
+			push_vertex(g_tris, p2, col);
+			push_vertex(g_tris, p0, col);
+			push_vertex(g_tris, p2, col);
+			push_vertex(g_tris, p3, col);
+		}
+		else
+		{
+			push_vertex(g_tris, p0, col);
+			push_vertex(g_tris, p3, col);
+			push_vertex(g_tris, p2, col);
+			push_vertex(g_tris, p0, col);
+			push_vertex(g_tris, p2, col);
+			push_vertex(g_tris, p1, col);
+		}
 	}
 
 	void push_box(const double mn[3], const double mx[3], const float color[4],
