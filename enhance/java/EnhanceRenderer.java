@@ -362,23 +362,53 @@ public final class EnhanceRenderer implements InvocationHandler {
             for (int t = 0; t < triangles; t++) {
                 final int a = t * 3, b = a + 1, c = a + 2;
 
-                emitTextVertex(pose, consumer, a, elements);
-                emitTextVertex(pose, consumer, b, elements);
-                emitTextVertex(pose, consumer, c, elements);
-                if (quads) {
-                    emitTextVertex(pose, consumer, c, elements);
-                }
+                // Emit the way round that faces the camera, rather than both.
+                // Drawing an antialiased glyph twice blends its edges twice,
+                // which is what turned the text crunchy once it was visible.
+                final boolean forward = facesCamera(a, b, c);
+                final int first = forward ? a : c;
+                final int last = forward ? c : a;
 
-                emitTextVertex(pose, consumer, c, elements);
+                emitTextVertex(pose, consumer, first, elements);
                 emitTextVertex(pose, consumer, b, elements);
-                emitTextVertex(pose, consumer, a, elements);
+                emitTextVertex(pose, consumer, last, elements);
                 if (quads) {
-                    emitTextVertex(pose, consumer, a, elements);
+                    emitTextVertex(pose, consumer, last, elements);
                 }
             }
         } catch (Throwable t) {
             mAddVertex = null;
         }
+    }
+
+    /**
+     * Whether a triangle's front side is the one the camera can see.
+     *
+     * The geometry is camera-relative, so the camera sits at the origin and the
+     * direction to any vertex is that vertex. A triangle faces the camera when
+     * its normal points back along that direction.
+     *
+     * Worth computing rather than assuming: the OpenGL path drew this with
+     * culling off, so the winding the builder produces was never defined by
+     * anything and cannot be reasoned about from the convention alone.
+     */
+    private static boolean facesCamera(int a, int b, int c) {
+        final ByteBuffer buf = submitTextBuffer;
+        final int pa = a * TEXT_STRIDE, pb = b * TEXT_STRIDE, pc = c * TEXT_STRIDE;
+
+        final float ax = buf.getFloat(pa), ay = buf.getFloat(pa + 4), az = buf.getFloat(pa + 8);
+        final float ux = buf.getFloat(pb) - ax;
+        final float uy = buf.getFloat(pb + 4) - ay;
+        final float uz = buf.getFloat(pb + 8) - az;
+        final float vx = buf.getFloat(pc) - ax;
+        final float vy = buf.getFloat(pc + 4) - ay;
+        final float vz = buf.getFloat(pc + 8) - az;
+
+        final float nx = uy * vz - uz * vy;
+        final float ny = uz * vx - ux * vz;
+        final float nz = ux * vy - uy * vx;
+
+        return nx * ax + ny * ay + nz * az < 0.0f;
     }
 
     private static void emitTextVertex(Object pose, Object consumer, int v, int elements)

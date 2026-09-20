@@ -1210,6 +1210,62 @@ namespace
 		}
 	}
 
+	// Our atlas is antialiased and wants linear sampling. Minecraft's own fonts
+	// are pixel art and are sampled nearest, which is what a DynamicTexture gets
+	// by default -- and what made the glyphs come out crunchy through the text
+	// render type. The sampler is a field, so it can simply be replaced.
+	void set_linear_sampler(JNIEnv* env, jobject texture)
+	{
+		if (!texture || !sdk::mappings::have(sdk::mappings::filter_mode_linear_name))
+			return;
+
+		jclass rs_cls = sdk::classloader::find_class(env, sdk::mappings::render_system_class_sig);
+		jclass fm_cls = sdk::classloader::find_class(env, sdk::mappings::filter_mode_class_sig);
+		jclass at_cls = sdk::classloader::find_class(env, sdk::mappings::abstract_texture_class_sig);
+		if (!rs_cls || !fm_cls || !at_cls)
+			return;
+
+		jmethodID mid_cache = env->GetStaticMethodID(rs_cls,
+			sdk::mappings::render_system_sampler_cache_name,
+			sdk::mappings::render_system_sampler_cache_sig);
+		jfieldID fid_linear = env->GetStaticFieldID(fm_cls,
+			sdk::mappings::filter_mode_linear_name, sdk::mappings::filter_mode_linear_sig);
+		jfieldID fid_sampler = env->GetFieldID(at_cls,
+			sdk::mappings::abstract_texture_sampler_name,
+			sdk::mappings::abstract_texture_sampler_sig);
+		clear_exception(env);
+		if (!mid_cache || !fid_linear || !fid_sampler)
+			return;
+
+		jobject cache = env->CallStaticObjectMethod(rs_cls, mid_cache);
+		jobject linear = env->GetStaticObjectField(fm_cls, fid_linear);
+		clear_exception(env);
+		if (!cache || !linear)
+			return;
+
+		jclass sc_cls = env->GetObjectClass(cache);
+		jmethodID mid_clamp = sc_cls
+			? env->GetMethodID(sc_cls, sdk::mappings::sampler_cache_clamp_name,
+			                   sdk::mappings::sampler_cache_clamp_sig)
+			: nullptr;
+		clear_exception(env);
+		if (sc_cls)
+			env->DeleteLocalRef(sc_cls);
+
+		jobject sampler = mid_clamp ? env->CallObjectMethod(cache, mid_clamp, linear) : nullptr;
+		clear_exception(env);
+		if (sampler)
+		{
+			env->SetObjectField(texture, fid_sampler, sampler);
+			clear_exception(env);
+			logger::log("[world_render] glyph atlas sampled linearly");
+			env->DeleteLocalRef(sampler);
+		}
+
+		env->DeleteLocalRef(linear);
+		env->DeleteLocalRef(cache);
+	}
+
 	// Hands ImGui's glyph atlas to the game as a texture, once, and builds the
 	// render type that names it.
 	//
@@ -1312,6 +1368,8 @@ namespace
 
 		env->CallVoidMethod(tex, dt_upload);
 		report_exception(env, "DynamicTexture.upload");
+
+		set_linear_sampler(env, tex);
 
 		jstring ns = env->NewStringUTF("enhance");
 		jstring path = env->NewStringUTF("glyphs");

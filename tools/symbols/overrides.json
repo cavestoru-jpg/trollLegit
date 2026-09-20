@@ -1076,5 +1076,81 @@
     "emit_sig": "dynamic_texture_upload_sig",
     "resolve_from": "26.1",
     "why": "pushes the filled pixels to the GPU, once"
+  },
+  "render_system_class": {
+    "new": true,
+    "kind": "class",
+    "class": "com/mojang/blaze3d/systems/RenderSystem",
+    "emit_sig": "render_system_class_sig",
+    "resolve_from": "26.3",
+    "why": "our glyph atlas is antialiased and expects linear sampling. Minecraft's own fonts are pixel art and are sampled nearest, so the atlas came out crunchy through the game's text render type"
+  },
+  "render_system_sampler_cache": {
+    "new": true,
+    "kind": "method",
+    "owner": "com/mojang/blaze3d/systems/RenderSystem",
+    "name": "getSamplerCache",
+    "desc": "()Lcom/mojang/blaze3d/systems/SamplerCache;",
+    "emit_name": "render_system_sampler_cache_name",
+    "emit_sig": "render_system_sampler_cache_sig",
+    "resolve_from": "26.3",
+    "why": "our glyph atlas is antialiased and expects linear sampling. Minecraft's own fonts are pixel art and are sampled nearest, so the atlas came out crunchy through the game's text render type"
+  },
+  "sampler_cache_class": {
+    "new": true,
+    "kind": "class",
+    "class": "com/mojang/blaze3d/systems/SamplerCache",
+    "emit_sig": "sampler_cache_class_sig",
+    "resolve_from": "26.3",
+    "why": "our glyph atlas is antialiased and expects linear sampling. Minecraft's own fonts are pixel art and are sampled nearest, so the atlas came out crunchy through the game's text render type"
+  },
+  "sampler_cache_clamp": {
+    "new": true,
+    "kind": "method",
+    "owner": "com/mojang/blaze3d/systems/SamplerCache",
+    "name": "getClampToEdge",
+    "desc": "(Lcom/mojang/renderpearl/api/textures/FilterMode;)Lcom/mojang/renderpearl/api/textures/GpuSampler;",
+    "emit_name": "sampler_cache_clamp_name",
+    "emit_sig": "sampler_cache_clamp_sig",
+    "resolve_from": "26.3",
+    "why": "clamped, so a glyph at the atlas edge does not bleed"
+  },
+  "filter_mode_class": {
+    "new": true,
+    "kind": "class",
+    "class": "com/mojang/renderpearl/api/textures/FilterMode",
+    "emit_sig": "filter_mode_class_sig",
+    "resolve_from": "26.3",
+    "why": "our glyph atlas is antialiased and expects linear sampling. Minecraft's own fonts are pixel art and are sampled nearest, so the atlas came out crunchy through the game's text render type"
+  },
+  "filter_mode_linear": {
+    "new": true,
+    "kind": "field",
+    "owner": "com/mojang/renderpearl/api/textures/FilterMode",
+    "name": "LINEAR",
+    "desc": "Lcom/mojang/renderpearl/api/textures/FilterMode;",
+    "emit_name": "filter_mode_linear_name",
+    "emit_sig": "filter_mode_linear_sig",
+    "resolve_from": "26.3",
+    "why": "our glyph atlas is antialiased and expects linear sampling. Minecraft's own fonts are pixel art and are sampled nearest, so the atlas came out crunchy through the game's text render type"
+  },
+  "abstract_texture_class": {
+    "new": true,
+    "kind": "class",
+    "class": "net/minecraft/client/renderer/texture/AbstractTexture",
+    "emit_sig": "abstract_texture_class_sig",
+    "resolve_from": "26.3",
+    "why": "our glyph atlas is antialiased and expects linear sampling. Minecraft's own fonts are pixel art and are sampled nearest, so the atlas came out crunchy through the game's text render type"
+  },
+  "abstract_texture_sampler": {
+    "new": true,
+    "kind": "field",
+    "owner": "net/minecraft/client/renderer/texture/AbstractTexture",
+    "name": "sampler",
+    "desc": "Lcom/mojang/renderpearl/api/textures/GpuSampler;",
+    "emit_name": "abstract_texture_sampler_name",
+    "emit_sig": "abstract_texture_sampler_sig",
+    "resolve_from": "26.3",
+    "why": "the sampler the texture is drawn with; swapping it is the whole fix"
   }
 }

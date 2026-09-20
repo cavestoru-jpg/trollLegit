@@ -921,6 +921,22 @@ namespace sdk
 		extern const char* render_type_text_see_through_name;
 		extern const char* render_type_text_see_through_sig;
 
+		// A linear sampler for that atlas. Minecraft's own fonts are pixel art and
+		// are sampled nearest, which is what a DynamicTexture gets by default and
+		// what made our antialiased glyphs come out crunchy.
+		extern const char* render_system_class_sig;
+		extern const char* render_system_sampler_cache_name;
+		extern const char* render_system_sampler_cache_sig;
+		extern const char* sampler_cache_class_sig;
+		extern const char* sampler_cache_clamp_name;
+		extern const char* sampler_cache_clamp_sig;
+		extern const char* filter_mode_class_sig;
+		extern const char* filter_mode_linear_name;
+		extern const char* filter_mode_linear_sig;
+		extern const char* abstract_texture_class_sig;
+		extern const char* abstract_texture_sampler_name;
+		extern const char* abstract_texture_sampler_sig;
+
 		// The game's own vertex sink, and the transform handed to the callback
 		// beside it. addVertex takes the pose overload so the geometry lands in the
 		// same space as everything else submitted that frame; setNormal is only
